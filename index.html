@@ -76,6 +76,11 @@ tr.sub1 td.t{padding-left:22px;color:var(--muted)}
 tr.dim td{color:var(--muted)}
 tbody tr:hover td{background:var(--soft)}
 tbody tr:hover td.fc{background:color-mix(in srgb,var(--fc-bg) 70%,var(--soft))}
+.vt{margin-bottom:12px;gap:12px}
+.pair{display:flex;gap:2px;align-items:flex-end;justify-content:center;margin-bottom:3px}
+th.pf,td.pf{background:var(--soft)}
+.apill{display:inline-block;min-width:46px;text-align:center;padding:1px 8px;border-radius:999px;font:600 12px "IBM Plex Sans",system-ui,sans-serif;color:var(--muted);background:var(--soft)}
+.apill.a-good{color:var(--ok);background:var(--ok-bg)} .apill.a-warn{color:var(--warn);background:var(--fc-bg)} .apill.a-bad{color:var(--bad);background:var(--bad-bg)}
 .mtag{font:600 11px "IBM Plex Sans",system-ui,sans-serif;color:var(--fc);margin-top:1px;white-space:nowrap}
 .bud{width:96px;text-align:right;font-family:"IBM Plex Mono",monospace;padding:4px 6px;font-size:13px}
 .muted{color:var(--muted)}
@@ -342,6 +347,13 @@ function compute(){
   for (const c in catQ){ gC[c] = growth(catQ[c], n); gCC[c] = growth(catCQ[c], n); }
   const cats = [...new Set(IDX.skus.map(s => s.cat))];
   const pick = model === 'best' ? {...getBT().pick} : Object.fromEntries(cats.map(c => [c, model]));
+  // Actual vs forecast: month t is compared with the 1-month-ahead forecast made at t-1, using only data up to t-1.
+  // With "Best", the model per category is the one Best would have chosen at t-1.
+  const past = [n - 1, n].map(t => {
+    const o = t - 1, pk = model === 'best' ? {...btAt(o).pick} : Object.fromEntries(cats.map(c => [c, model]));
+    const g = {}, gc = {}; for (const c of cats){ g[c] = growth(catQ[c], o); gc[c] = growth(catCQ[c], o); }
+    return {t, o, pk, g, gc};
+  });
   const rows = IDX.skus.map(s => {
     const d = DB.skus[s.i] || empty;
     let l12 = 0; for (let t = Math.max(0, n - 11); t <= n; t++) l12 += d.q[t];
@@ -349,10 +361,13 @@ function compute(){
     const f = [1,2,3].map(h => forecast(m, d.q, n, h, p0, gC[s.cat]));
     const cf = [1,2,3].map(h => forecast(m, d.cq, n, h, p0, gCC[s.cat]));
     const price = priceOf(d, n), cprice = comboPrice(d, n);
-    return {s, d, model:m, avg12:l12 / 12, sold12:l12 !== 0 || d.q.slice(Math.max(0,n-11)).some(x => x), f, cf, price, cprice,
+    const pf = past.map(P => forecast(P.pk[s.cat], d.q, P.o, 1, p0, P.g[s.cat]));
+    const pcf = past.map(P => forecast(P.pk[s.cat], d.cq, P.o, 1, p0, P.gc[s.cat]));
+    const pp = past.map(P => priceOf(d, P.o)), pcp = past.map(P => comboPrice(d, P.o));
+    return {s, d, model:m, pf, pcf, pp, pcp, avg12:l12 / 12, sold12:l12 !== 0 || d.q.slice(Math.max(0,n-11)).some(x => x), f, cf, price, cprice,
             minStock: Math.ceil(Math.max(...f) - 1e-9)};
   });
-  CALC = {model, n, p0, T, rows, gC, pick};
+  CALC = {model, n, p0, T, rows, gC, pick, pastPick: past.map(P => P.pk)};
 }
 
 /* ================= views ================= */
@@ -379,17 +394,38 @@ function mainAgg(){
     const c = r.s.cat;
     for (const combo of [false, true]){
       const key = c + (combo ? '|combo' : '');
-      const a = out[key] || (out[key] = {aq:[0,0], av:[0,0], fq:[0,0,0], fv:[0,0,0]});
+      const a = out[key] || (out[key] = {aq:[0,0], av:[0,0], fq:[0,0,0], fv:[0,0,0], pq:[0,0], pv:[0,0]});
       const Q = combo ? r.d.cq : r.d.q, V = combo ? r.d.cv : r.d.v, F = combo ? r.cf : r.f, P = combo ? r.cprice : r.price;
+      const PF = combo ? r.pcf : r.pf, PP = combo ? r.pcp : r.pp;
+      PF.forEach((f, k) => { a.pq[k] += f; a.pv[k] += f * PP[k] / 1e5; });
       a.aq[0] += Q[n-1] || 0; a.aq[1] += Q[n] || 0; a.av[0] += (V[n-1] || 0) / 1e5; a.av[1] += (V[n] || 0) / 1e5;
       F.forEach((f, k) => { a.fq[k] += f; a.fv[k] += f * P / 1e5; });
     }
   }
   return out;
 }
+let VIEW = store.get('fc-view', 'fc'), UNIT = store.get('fc-unit', 'q');
+function accOf(A, F){ if (A > 0) return Math.max(0, 1 - Math.abs(A - F) / A); if (Math.abs(F) < 1e-9 && Math.abs(A) < 1e-9) return 1; return null; }
+function accCls(A, F){ if (!(A > 0)) return ''; const e = Math.abs(A - F) / A; return e <= 0.10 ? 'a-good' : e <= 0.25 ? 'a-warn' : 'a-bad'; }
+const sgn = (v, d=0) => (v > 0 ? '+' : v < 0 ? '−' : '') + fmt(Math.abs(v), d);
+function accCells(A, F, d=0, first=false){
+  const acc = accOf(A, F), cls = accCls(A, F);
+  return `<td class="${first?'bl':''}">${fmt(A,d)}</td><td class="pf">${fmt(F,d)}</td><td>${sgn(A - F, d)}</td>` +
+         `<td><span class="apill ${cls}">${acc == null ? '—' : fmt(acc*100,0) + '%'}</span></td>`;
+}
+function viewToggle(withUnit){
+  return `<div class="controls vt"><div class="seg" id="vw"><button data-v="fc" class="${VIEW==='fc'?'on':''}">Forecast</button><button data-v="acc" class="${VIEW==='acc'?'on':''}">Actual vs forecast</button></div>
+    ${withUnit && VIEW==='acc' ? `<div class="seg" id="un"><button data-u="q" class="${UNIT==='q'?'on':''}">Units</button><button data-u="v" class="${UNIT==='v'?'on':''}">₹ lakh</button></div>` : ''}</div>`;
+}
+function bindToggle(fn){
+  document.querySelectorAll('#vw button').forEach(b => b.onclick = () => { VIEW = b.dataset.v; store.set('fc-view', VIEW); OPEN = null; fn(); });
+  document.querySelectorAll('#un button').forEach(b => b.onclick = () => { UNIT = b.dataset.u; store.set('fc-unit', UNIT); fn(); });
+}
+const pickLabel = (c, k) => MODELS[CALC.pastPick[k][c]].short;
 function monthHeads(){ const {n, p0} = CALC; return [n-1, n, n+1, n+2, n+3].map(t => pLabel(p0 + t)); }
 
 function renderMain(){
+  if (VIEW === 'acc') return renderMainAcc();
   const agg = mainAgg(), L = monthHeads(), bud = store.get('fc-budget', {});
   const sumRows = list => { const z = {aq:[0,0], av:[0,0], fq:[0,0,0], fv:[0,0,0]}; for (const a of list) for (const k of ['aq','av','fq','fv']) a[k].forEach((v,i) => z[k][i] += v); return z; };
   const cells = a => [
@@ -416,7 +452,7 @@ function renderMain(){
   html += `<tr class="tot"><td class="t sticky">Grand total</td><td></td><td></td>${cells(G)}</tr>`;
 
   const card = (lbl, v, u, c='') => `<div class="card" style="${c}"><div class="lbl">${lbl}</div><div class="n">${v}</div><div class="u">${u}</div></div>`;
-  $('view').innerHTML = `
+  $('view').innerHTML = viewToggle(false) + `
     <div class="cards">
       ${card(L[1] + ' actual', '₹' + fmt(G.av[1],1) + ' L', fmt(G.aq[1]) + ' units')}
       ${[0,1,2].map(k => card(L[2+k] + ' forecast', '₹' + fmt(G.fv[k],1) + ' L', fmt(G.fq[k]) + ' units', '--c:var(--fc)')).join('')}
@@ -437,15 +473,69 @@ function renderMain(){
     const b = store.get('fc-budget', {}); const v = inp.value.trim();
     if (v === '') delete b[inp.dataset.b]; else b[inp.dataset.b] = v; store.set('fc-budget', b);
   });
+  bindToggle(renderMain);
+}
+
+function renderMainAcc(){
+  const agg = mainAgg(), L = monthHeads(), val = UNIT === 'v', d = val ? 2 : 0;
+  const A = a => val ? a.av : a.aq, F = a => val ? a.pv : a.pq;
+  const sumRows = list => { const z = {aq:[0,0], av:[0,0], pq:[0,0], pv:[0,0]}; for (const a of list) for (const k of ['aq','av','pq','pv']) a[k].forEach((v,i) => z[k][i] += v); return z; };
+  const cells = a => [0,1].map(k => accCells(A(a)[k], F(a)[k], d, true)).join('');
+  const groups = [...new Set(MAIN_ROWS.map(r => r[0]))];
+  let html = '', grand = [];
+  for (const g of groups){
+    const parts = [];
+    for (const [grp, sg, o] of MAIN_ROWS.filter(r => r[0] === g)){
+      if (o.todo){ html += `<tr class="dim"><td class="t sticky">${esc(grp)}</td><td class="t">${esc(sg)}</td><td class="t bl muted" colspan="8">Next iteration</td></tr>`; continue; }
+      const a = agg[o.cat + (o.combo ? '|combo' : '')];
+      if (!o.combo) parts.push(a);
+      const m0 = pickLabel(o.cat, 0), m1 = pickLabel(o.cat, 1);
+      const used = CALC.model === 'best' && !o.combo ? `<div class="mtag">${esc(m0 === m1 ? m0 : m0 + ' / ' + m1)}</div>` : '';
+      html += `<tr class="${o.combo ? 'sub1' : ''}"><td class="t sticky">${esc(grp)}</td><td class="t">${esc(o.combo ? sg + ' ⓘ' : sg)}${used}</td>${cells(a)}</tr>`;
+    }
+    if (parts.length > 1) html += `<tr class="g"><td class="t sticky">${esc(g)} total</td><td></td>${cells(sumRows(parts))}</tr>`;
+    grand.push(...parts);
+  }
+  const G = sumRows(grand);
+  html += `<tr class="tot"><td class="t sticky">Grand total</td><td></td>${cells(G)}</tr>`;
+  const card = k => { const a = accOf(G.aq[k], G.pq[k]), b = accOf(G.av[k], G.pv[k]);
+    return `<div class="card" style="--c:var(--ok)"><div class="lbl">${L[k]} accuracy</div><div class="n">${a == null ? '—' : fmt(a*100,0) + '%'}</div>
+      <div class="u">Units: actual ${fmt(G.aq[k])} vs forecast ${fmt(G.pq[k])}<br>Value: ${b == null ? '—' : fmt(b*100,0) + '%'} · ₹${fmt(G.av[k],1)} L vs ₹${fmt(G.pv[k],1)} L</div></div>`; };
+  const sku = skuAcc(CALC.rows);
+  $('view').innerHTML = viewToggle(true) + `
+    <div class="cards">${card(0)}${card(1)}
+      <div class="card" style="--c:var(--muted)"><div class="lbl">SKU-level accuracy</div><div class="n">${sku[1] == null ? '—' : fmt(sku[1]*100,0) + '%'}</div>
+        <div class="u">${L[1]} across all SKUs (${L[0]}: ${sku[0] == null ? '—' : fmt(sku[0]*100,0) + '%'}). Lower than category accuracy because over- and under-forecasts don't cancel out.</div></div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead>
+        <tr><th class="t sticky" rowspan="2">Product group</th><th class="t" rowspan="2">Sub-group</th>
+          ${[0,1].map(k => `<th class="grp" colspan="4">${L[k]} (n${k===0?'-1':''}) · ${val ? '₹ lakh' : 'units'}</th>`).join('')}</tr>
+        <tr>${[0,1].map(() => `<th class="bl">Actual</th><th class="pf">Forecast</th><th>Variance</th><th>Accuracy</th>`).join('')}</tr>
+      </thead>
+      <tbody>${html}</tbody>
+    </table></div>
+    <p class="note"><b>How this works:</b> each month's forecast is the one the model would have made a month earlier, using only the sales data available then
+      (${L[1]} is compared with the forecast made after ${L[0]} closed). ${CALC.model === 'best' ? 'With Best per category, the model is the one Best would have chosen at that time, shown under each sub-group (' + L[0] + ' / ' + L[1] + ' if it changed). ' : ''}
+      Variance = actual − forecast. Accuracy = 100% − |actual − forecast| ÷ actual. <span class="apill a-good">within 10%</span> <span class="apill a-warn">10–25%</span> <span class="apill a-bad">over 25%</span>.
+      Forecast value uses the 12-month average price as it was at the time.</p>`;
+  bindToggle(renderMain);
+}
+function skuAcc(rows){   // SKU-level accuracy = 1 − Σ|A−F| ÷ ΣA, for months n-1 and n
+  const {n} = CALC;
+  return [0,1].map(k => { let e = 0, a = 0; for (const r of rows){ const A = r.d.q[n - 1 + k]; e += Math.abs(A - r.pf[k]); a += Math.max(0, A); } return a > 0 ? Math.max(0, 1 - e / a) : null; });
 }
 
 function renderSku(){
+  if (VIEW === 'acc') return renderSkuAcc();
   const sec = SECTIONS.find(s => s.name === SECTION);
   if (!sec.cats.includes(CAT)) CAT = sec.cats[0];
   const L = monthHeads();
   const all = CALC.rows.filter(r => r.s.cat === CAT);
   let view = all.filter(r => (!ONLY12 || r.sold12) && (!Q || r.s.name.toLowerCase().includes(Q)));
-  const key = {name:r => r.s.name, avg12:r => r.avg12, min:r => r.minStock, f1:r => r.f[0], f2:r => r.f[1], f3:r => r.f[2]}[SORT.k];
+  const keys = {name:r => r.s.name, avg12:r => r.avg12, min:r => r.minStock, f1:r => r.f[0], f2:r => r.f[1], f3:r => r.f[2]};
+  if (!keys[SORT.k]) SORT = {k:'avg12', d:-1};
+  const key = keys[SORT.k];
   view.sort((a,b) => { const x = key(a), y = key(b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * SORT.d; });
   const tot = view.reduce((z,r) => (z.a += r.avg12, z.m += r.minStock, r.f.forEach((v,k) => z.f[k] += v), z), {a:0, m:0, f:[0,0,0]});
   const cnt = c => CALC.rows.filter(r => r.s.cat === c && (!ONLY12 || r.sold12)).length;
@@ -464,7 +554,7 @@ function renderSku(){
     }
     return html;
   }).join('');
-  $('view').innerHTML = `
+  $('view').innerHTML = viewToggle(false) + `
     <div class="panel">
       <div class="seg big" id="secs">${SECTIONS.map(s => `<button data-s="${s.name}" class="${s.name===SECTION?'on':''}">${s.name}</button>`).join('')}</div>
       <div class="seg" id="cats" style="margin-top:12px">${sec.cats.map(c => `<button data-c="${c}" class="${c===CAT?'on':''}">${c}<span class="k">${cnt(c)}</span></button>`).join('')}</div>
@@ -489,13 +579,75 @@ function renderSku(){
   $('only12').onchange = e => { ONLY12 = e.target.checked; renderSku(); };
   document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => { const k = th.dataset.k; if (SORT.k === k) SORT.d *= -1; else SORT = {k, d: k === 'name' ? 1 : -1}; renderSku(); });
   document.querySelectorAll('tbody tr[data-i]').forEach(tr => tr.onclick = () => { const i = +tr.dataset.i; OPEN = OPEN === i ? null : i; renderSku(); });
+  bindToggle(renderSku);
+}
+
+function renderSkuAcc(){
+  const sec = SECTIONS.find(s => s.name === SECTION);
+  if (!sec.cats.includes(CAT)) CAT = sec.cats[0];
+  const L = monthHeads(), {n, p0} = CALC;
+  const all = CALC.rows.filter(r => r.s.cat === CAT);
+  let view = all.filter(r => (!ONLY12 || r.sold12) && (!Q || r.s.name.toLowerCase().includes(Q)));
+  const A = (r, k) => r.d.q[n - 1 + k], F = (r, k) => r.pf[k];
+  const keys = {name:r => r.s.name, a0:r => A(r,0), f0:r => F(r,0), v0:r => Math.abs(A(r,0) - F(r,0)), c0:r => accOf(A(r,0), F(r,0)) ?? -1,
+                a1:r => A(r,1), f1:r => F(r,1), v1:r => Math.abs(A(r,1) - F(r,1)), c1:r => accOf(A(r,1), F(r,1)) ?? -1};
+  const key = keys[SORT.k] || keys.v1; if (!keys[SORT.k]) SORT = {k:'v1', d:-1};
+  view.sort((a,b) => { const x = key(a), y = key(b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * SORT.d; });
+  const tot = [0,1].map(k => view.reduce((z,r) => (z.a += A(r,k), z.f += F(r,k), z), {a:0, f:0}));
+  const sk = skuAcc(view);
+  const cnt = c => CALC.rows.filter(r => r.s.cat === c && (!ONLY12 || r.sold12)).length;
+  const head = (k, l, cls='') => `<th data-k="${k}" class="${cls}">${l}${SORT.k===k ? (SORT.d>0?' ▲':' ▼') : ''}</th>`;
+  const m0 = pickLabel(CAT, 0), m1 = pickLabel(CAT, 1);
+  const rowsHtml = view.map(r => {
+    let html = `<tr data-i="${r.s.i}" style="cursor:pointer" class="${r.sold12 ? '' : 'dim'}"><td class="t sticky">${esc(r.s.name)}</td>
+      ${[0,1].map(k => accCells(A(r,k), F(r,k), 0, true)).join('')}</tr>`;
+    if (OPEN === r.s.i){
+      const from = Math.max(0, n - 11), hist = r.d.q.slice(from, n + 1), mx = Math.max(1, ...hist.map(v => Math.max(0,v)), ...r.pf);
+      const bar = (v, c, w) => `<i style="height:${Math.max(0,v)/mx*70}px;width:${w};margin:0;${c ? 'background:var(--fc)' : ''}"></i>`;
+      html += `<tr class="detail"><td colspan="9"><div style="overflow-x:auto"><div class="bars">${hist.map((v,j) => { const t = from + j, k = t - (n - 1);
+        return `<div><b>${fmtQ(v)}${k >= 0 ? ' / ' + fmtQ(r.pf[k]) : ''}</b><span class="pair">${k >= 0 ? bar(v, false, '40%') + bar(r.pf[k], true, '40%') : bar(v, false, '72%')}</span>${pLabel(p0+t)}</div>`; }).join('')}</div></div>
+        <div class="note"><span class="legend"><i style="background:var(--accent)"></i>actual</span> <span class="legend"><i style="background:var(--fc)"></i>forecast made a month before</span> · last 12 months shown</div></td></tr>`;
+    }
+    return html;
+  }).join('');
+  $('view').innerHTML = viewToggle(false) + `
+    <div class="panel">
+      <div class="seg big" id="secs">${SECTIONS.map(s => `<button data-s="${s.name}" class="${s.name===SECTION?'on':''}">${s.name}</button>`).join('')}</div>
+      <div class="seg" id="cats" style="margin-top:12px">${sec.cats.map(c => `<button data-c="${c}" class="${c===CAT?'on':''}">${c}<span class="k">${cnt(c)}</span></button>`).join('')}</div>
+      <div class="controls" style="margin-top:12px">
+        <input type="search" id="q" placeholder="Search SKU…" value="${esc(Q)}">
+        <label class="chk"><input type="checkbox" id="only12" ${ONLY12?'checked':''}> Only SKUs sold in the last 12 months</label>
+      </div>
+    </div>
+    <div class="count">Showing ${view.length} of ${all.length} ${esc(CAT)} SKUs · model: <b>${esc(m0 === m1 ? MODELS[CALC.pastPick[1][CAT]].label : m0 + ' (' + L[0] + ') / ' + m1 + ' (' + L[1] + ')')}</b>
+      · SKU-level accuracy ${L[0]} ${sk[0] == null ? '—' : fmt(sk[0]*100,0) + '%'}, ${L[1]} ${sk[1] == null ? '—' : fmt(sk[1]*100,0) + '%'} · sorted by ${SORT.k === 'v1' ? 'biggest ' + L[1] + ' miss' : 'your choice'}</div>
+    <div class="tablewrap"><table class="sortable">
+      <thead>
+        <tr><th class="t sticky" rowspan="2" data-k="name">SKU${SORT.k==='name' ? (SORT.d>0?' ▲':' ▼') : ''}</th>${[0,1].map(k => `<th class="grp" colspan="4">${L[k]} (n${k===0?'-1':''}) · units</th>`).join('')}</tr>
+        <tr>${[0,1].map(k => head('a'+k,'Actual','bl') + head('f'+k,'Forecast','pf') + head('v'+k,'Variance') + head('c'+k,'Accuracy')).join('')}</tr>
+      </thead>
+      <tbody>
+        <tr class="g"><td class="t sticky">${esc(CAT)} total (${view.length})</td>${tot.map(z => accCells(z.a, z.f, 0, true)).join('')}</tr>
+        ${rowsHtml || `<tr><td colspan="9" class="empty">No SKUs match.</td></tr>`}
+      </tbody>
+    </table></div>
+    <p class="note">Forecast = what the model would have forecast for that month one month earlier. The total row compares category totals; SKU-level accuracy (above the table) adds up each SKU's miss, so it is always lower.
+      Sort by Variance to find the biggest misses. Accuracy shows — when a SKU had no sales but was forecast to sell.</p>`;
+  document.querySelectorAll('#secs button').forEach(b => b.onclick = () => { SECTION = b.dataset.s; CAT = SECTIONS.find(s => s.name === SECTION).cats[0]; OPEN = null; renderSku(); });
+  document.querySelectorAll('#cats button').forEach(b => b.onclick = () => { CAT = b.dataset.c; OPEN = null; renderSku(); });
+  $('q').oninput = e => { Q = e.target.value.trim().toLowerCase(); const pos = e.target.selectionStart; renderSku(); const q = $('q'); q.focus(); q.setSelectionRange(pos,pos); };
+  $('only12').onchange = e => { ONLY12 = e.target.checked; renderSku(); };
+  document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => { const k = th.dataset.k; if (SORT.k === k) SORT.d *= -1; else SORT = {k, d: k === 'name' ? 1 : -1}; renderSku(); });
+  document.querySelectorAll('tbody tr[data-i]').forEach(tr => tr.onclick = () => { const i = +tr.dataset.i; OPEN = OPEN === i ? null : i; renderSku(); });
+  bindToggle(renderSku);
 }
 
 /* ---- backtest: 1-month-ahead forecasts for each of the last 6 months ---- */
-let BT = null;
+let BT = null, BTAT = {};
 const getBT = () => BT || (BT = backtest());
-function backtest(){
-  const {p0, T} = DB, n = T - 1, cats = [...new Set(IDX.skus.map(s => s.cat))];
+const btAt = e => BTAT[e] || (BTAT[e] = backtest(e));   // backtest using only data up to month index e
+function backtest(nEnd){
+  const {p0, T} = DB, n = nEnd ?? T - 1, cats = [...new Set(IDX.skus.map(s => s.cat))];
   const res = {};
   const catQ = {}; for (const c of cats) catQ[c] = ZERO(T);
   for (const [i, d] of Object.entries(DB.skus)){ const c = IDX.skus[i].cat; d.q.forEach((v,t) => catQ[c][t] += v); }
@@ -557,6 +709,23 @@ function exportExcel(){
   for (const r of CALC.rows) sub.push([r.s.name, r.s.cat, r.s.prod, +r.avg12.toFixed(2), r.minStock, ...r.f.map(v => +v.toFixed(2)), +r.price.toFixed(2), MODELS[r.model].label]);
   const ws2 = XLSX.utils.aoa_to_sheet(sub); ws2['!cols'] = [{wch:28},{wch:10},{wch:12}, ...Array(6).fill({wch:18})];
   XLSX.utils.book_append_sheet(wb, ws2, 'Sub Dashboard');
+  // actual vs forecast (months n-1 and n)
+  const pct = (A, F) => { const a = accOf(A, F); return a == null ? '' : +(a * 100).toFixed(1); };
+  const avH = ['Actual','Forecast','Variance','Accuracy %'];
+  const cat = [['Product group','Sub-group', ...[0,1].flatMap(k => avH.map(h => `${L[k]} ${h} (Vol)`)), ...[0,1].flatMap(k => avH.map(h => `${L[k]} ${h} (Val ₹ lakh)`)), `Model ${L[0]}`, `Model ${L[1]}`]];
+  for (const [g, sg, o] of MAIN_ROWS){
+    if (o.todo) continue;
+    const a = agg[o.cat + (o.combo ? '|combo' : '')];
+    cat.push([g, sg, ...[0,1].flatMap(k => [Math.round(a.aq[k]), +a.pq[k].toFixed(1), +(a.aq[k] - a.pq[k]).toFixed(1), pct(a.aq[k], a.pq[k])]),
+      ...[0,1].flatMap(k => [+a.av[k].toFixed(2), +a.pv[k].toFixed(2), +(a.av[k] - a.pv[k]).toFixed(2), pct(a.av[k], a.pv[k])]),
+      MODELS[CALC.pastPick[0][o.cat]].label, MODELS[CALC.pastPick[1][o.cat]].label]);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cat), 'Act vs Fcst - Categories');
+  const skus = [['SKU','Category', ...[0,1].flatMap(k => avH.map(h => `${L[k]} ${h} (Vol)`)), `Model ${L[0]}`, `Model ${L[1]}`]];
+  for (const r of CALC.rows){ const A = k => r.d.q[CALC.n - 1 + k];
+    skus.push([r.s.name, r.s.cat, ...[0,1].flatMap(k => [A(k), +r.pf[k].toFixed(2), +(A(k) - r.pf[k]).toFixed(2), pct(A(k), r.pf[k])]),
+      MODELS[CALC.pastPick[0][r.s.cat]].label, MODELS[CALC.pastPick[1][r.s.cat]].label]); }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(skus), 'Act vs Fcst - SKUs');
   // database: one row per SKU per month
   const db = [['SKU','Category','Product','Month','Net qty','Net value (₹)','Qty with bush','Value with bush (₹)']];
   for (const [i, d] of Object.entries(DB.skus)){ const s = IDX.skus[i]; for (let t = 0; t < DB.T; t++) if (d.q[t] || d.v[t]) db.push([s.name, s.cat, s.prod, pLabel(DB.p0 + t), d.q[t], +d.v[t].toFixed(2), d.cq[t], +d.cv[t].toFixed(2)]); }
@@ -642,7 +811,7 @@ function downloadUnmapped(){
 }
 
 function afterLoad(){
-  BT = null;
+  BT = null; BTAT = {};
   const n = DB.p0 + DB.T - 1;
   $('asof').textContent = `Sales ${pLabel(DB.p0)} – ${pLabel(n)} · month n = ${pLabel(n)} · ${MASTER.skus.length} dashboard SKUs`;
   compute(); render();
