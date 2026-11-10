@@ -132,6 +132,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
   <nav class="tabs" id="tabs">
     <button data-tab="main" class="on">Main dashboard</button>
     <button data-tab="sku">SKU detail</button>
+    <button data-tab="ob">Order booking</button>
     <button data-tab="acc">Model accuracy</button>
   </nav>
 
@@ -146,6 +147,11 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
       <h3>Sales files</h3>
       <p>One or more Excel/CSV files (e.g. Data of Sales 2023 … 2026). Columns: SKU · Month · Year · Net value · QTY.</p>
       <input type="file" id="fSales" accept=".xlsx,.xls,.csv" multiple>
+    </div>
+    <div class="field">
+      <h3>Order booking projections <span class="muted" style="font-weight:400">(optional)</span></h3>
+      <p>Finance's sheet: products down column A (Pulley, Coupling, SMSR, PHGM, Vibromotor), months across row 1. Values in ₹ or ₹ lakh. It is kept until you upload a new one, and can be uploaded on its own.</p>
+      <input type="file" id="fOB" accept=".xlsx,.xls,.csv">
     </div>
     <details class="field">
       <summary>Optional: updated mapping files</summary>
@@ -377,7 +383,7 @@ function render(){
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === TAB));
   if (!DB){ $('view').innerHTML = emptyState(); $('btnExport').disabled = true; bindEmpty(); return; }
   $('btnExport').disabled = false;
-  if (TAB === 'main') renderMain(); else if (TAB === 'sku') renderSku(); else renderAcc();
+  if (TAB === 'main') renderMain(); else if (TAB === 'sku') renderSku(); else if (TAB === 'ob') renderOB(); else renderAcc();
 }
 function emptyState(){
   return `${NOTICE ? `<div class="panel" style="border-color:var(--fc);background:var(--fc-bg)"><b>Update:</b> ${esc(NOTICE)}</div>` : ''}<div class="panel empty"><h2>Upload your sales data to start</h2>
@@ -642,6 +648,113 @@ function renderSkuAcc(){
   bindToggle(renderSku);
 }
 
+/* ---- order booking (finance projections) vs sales ---- */
+const OB_GROUPS = [['Pulley',['TLP','TLB','V COOL']], ['Coupling',['EFBC','EFGC','ESSEX','FBC','FGC','FRC','FTC','HRC']],
+                   ['SMSR',['SMSR']], ['PHGM',['PHGM']], ['VibroMotor',['VM']]];
+const OB_ALIAS = {PULLEY:'Pulley', PULLEYS:'Pulley', COUPLING:'Coupling', COUPLINGS:'Coupling', SMSR:'SMSR', PHGM:'PHGM', VIBROMOTOR:'VibroMotor', VIBROMOTORS:'VibroMotor', VM:'VibroMotor'};
+let OB = store.get('fc-ob', null), OBSEL = 'Total';
+function monthOf(v){
+  if (v instanceof Date) return v.getFullYear() * 12 + v.getMonth();
+  if (typeof v === 'number' && v > 20000 && v < 80000){ const d = XLSX.SSF.parse_date_code(v); return d.y * 12 + d.m - 1; }
+  const t = String(v ?? '').trim(); let m;
+  if ((m = t.match(/^(\d{4})-(\d{1,2})/))) return +m[1] * 12 + +m[2] - 1;
+  if ((m = t.match(/^([A-Za-z]{3})[A-Za-z]*[\s\-'’.]*(\d{2,4})$/))){ const i = MON.findIndex(x => x.toLowerCase() === m[1].toLowerCase()); if (i >= 0){ const y = +m[2] < 100 ? 2000 + +m[2] : +m[2]; return y * 12 + i; } }
+  return null;
+}
+async function readOB(f){
+  const wb = await readWB(f);
+  for (const name of wb.SheetNames){
+    const a = XLSX.utils.sheet_to_json(wb.Sheets[name], {header:1, defval:'', raw:true});
+    const hi = a.slice(0, 10).findIndex(r => r.filter(c => monthOf(c) != null).length >= 2);
+    if (hi < 0) continue;
+    const cols = a[hi].map(monthOf);
+    const months = {}; let mx = 0;
+    for (const r of a.slice(hi + 1)){
+      const g = OB_ALIAS[N(r[0])]; if (!g) continue;
+      cols.forEach((p, j) => { if (p == null || r[j] === '' || r[j] == null) return; const v = num(r[j]); (months[p] ||= {})[g] = v; mx = Math.max(mx, Math.abs(v)); });
+    }
+    if (!Object.keys(months).length) continue;
+    const rupees = mx >= 100000;                       // ₹ figures are converted to ₹ lakh
+    if (rupees) for (const p in months) for (const g in months[p]) months[p][g] /= 1e5;
+    return {months, rupees, file:f.name, loaded:new Date().toISOString()};
+  }
+  throw new Error('Could not find the order booking table: put products in column A and months across one row.');
+}
+function obSales(cats, p){        // ₹ lakh: actual for closed months, forecast for the next 3, else null
+  const {n, p0} = CALC, t = p - p0;
+  const set = new Set(cats);
+  if (t >= 0 && t <= n){ let v = 0; for (const [i, d] of Object.entries(DB.skus)) if (set.has(IDX.skus[i].cat)) v += d.v[t]; return {v:v / 1e5, kind:'a'}; }
+  const k = t - n;
+  if (k >= 1 && k <= 3){ let v = 0; for (const r of CALC.rows) if (set.has(r.s.cat)) v += r.f[k-1] * r.price / 1e5; return {v, kind:'f'}; }
+  return null;
+}
+function obTable(){
+  const months = Object.keys(OB.months).map(Number).sort((a,b) => a - b);
+  const rows = OB_GROUPS.map(([g, cats]) => ({g, cells: months.map(p => ({p, ob: OB.months[p][g] ?? null, s: obSales(cats, p)}))}));
+  const total = {g:'Total', cells: months.map((p, j) => {
+    const obs = rows.map(r => r.cells[j].ob).filter(v => v != null), ss = rows.map(r => r.cells[j].s);
+    return {p, ob: obs.length ? obs.reduce((a,b) => a + b, 0) : null, s: ss.every(x => x) ? {v: ss.reduce((a,x) => a + x.v, 0), kind: ss[0].kind} : null};
+  })};
+  return {months, rows, total};
+}
+const obPct = (s, ob) => s && ob ? fmt(s.v / ob * 100, 0) + '%' : '—';
+function renderOB(){
+  if (!OB){
+    $('view').innerHTML = `<div class="panel empty"><h2>Add finance's order booking projections</h2>
+      <p>Upload the projections sheet (products down column A, months across row 1) to compare order booking with sales.</p>
+      <p><button class="primary" id="btnUpload3">Upload order booking</button></p></div>`;
+    $('btnUpload3').onclick = openUpload; return;
+  }
+  const {months, rows, total} = obTable(), {n, p0} = CALC;
+  const closed = months.filter(p => p - p0 <= n && p - p0 >= 0);
+  const kindLbl = p => { const t = p - p0; return t <= n ? 'Actual sales' : t - n <= 3 ? 'Forecast sales' : 'No forecast yet'; };
+  const cumul = r => { let o = 0, sv = 0; r.cells.forEach(c => { if (closed.includes(c.p) && c.ob != null && c.s){ o += c.ob; sv += c.s.v; } }); return {o, sv}; };
+  const line = (r, cls='') => `<tr class="${cls}"><td class="t sticky">${esc(r.g)}</td>${r.cells.map(c => `<td class="bl">${c.ob == null ? '—' : fmt(c.ob,1)}</td><td class="${c.s && c.s.kind==='f' ? 'fc' : ''}">${c.s ? fmt(c.s.v,1) : '—'}</td><td><b>${obPct(c.s, c.ob)}</b></td>`).join('')}
+    ${(() => { const z = cumul(r); return `<td class="bl">${fmt(z.o,1)}</td><td>${fmt(z.sv,1)}</td><td><b>${z.o ? fmt(z.sv / z.o * 100, 0) + '%' : '—'}</b></td>`; })()}</tr>`;
+  // chart for the selected product
+  const sel = OBSEL === 'Total' ? total : rows.find(r => r.g === OBSEL) || total;
+  const W = 1040, H = 280, padL = 56, padB = 34, padT = 28, bw = (W - padL - 10) / months.length;
+  const mx = Math.max(1, ...sel.cells.map(c => Math.max(c.ob || 0, c.s ? c.s.v : 0))) * 1.12;
+  const y = v => padT + (H - padT - padB) * (1 - v / mx);
+  const ticks = [0, .25, .5, .75, 1].map(f => mx / 1.12 * f);
+  const chart = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;min-width:560px;height:auto" role="img" aria-label="Order booking vs sales, ${esc(sel.g)}">
+    ${ticks.map(v => `<line x1="${padL}" x2="${W-6}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${padL-6}" y="${y(v)+4}" text-anchor="end" font-size="11" fill="var(--muted)">${fmt(v,0)}</text>`).join('')}
+    ${sel.cells.map((c, j) => { const x = padL + j * bw, w = bw * .34;
+      const ob = c.ob == null ? '' : `<rect x="${x + bw*.14}" y="${y(c.ob)}" width="${w}" height="${y(0)-y(c.ob)}" fill="var(--soft)" stroke="var(--muted)" stroke-width="1"/>`;
+      const sv = c.s ? `<rect x="${x + bw*.14 + w + 4}" y="${y(c.s.v)}" width="${w}" height="${y(0)-y(c.s.v)}" fill="var(${c.s.kind==='f' ? '--fc' : '--accent'})"/>` : '';
+      const pct = c.s && c.ob ? `<text x="${x + bw*.5}" y="${Math.min(y(c.ob), y(c.s.v)) - 7}" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">${fmt(c.s.v / c.ob * 100, 0)}%</text>` : '';
+      return ob + sv + pct + `<text x="${x + bw*.5}" y="${H - 12}" text-anchor="middle" font-size="12" fill="var(--muted)">${pLabel(c.p)}</text>`; }).join('')}
+  </svg>`;
+  const tc = cumul(total);
+  const nextP = months.find(p => p - p0 === n + 1), nc = nextP != null ? total.cells.find(c => c.p === nextP) : null;
+  $('view').innerHTML = `
+    <div class="cards">
+      <div class="card"><div class="lbl">Order booking, ${months.length} months</div><div class="n">₹${fmt(total.cells.reduce((a,c) => a + (c.ob || 0), 0),0)} L</div><div class="u">${pLabel(months[0])} – ${pLabel(months[months.length-1])} · finance projection</div></div>
+      <div class="card" style="--c:var(--ok)"><div class="lbl">Sales ÷ order booking to date</div><div class="n">${tc.o ? fmt(tc.sv / tc.o * 100, 0) + '%' : '—'}</div><div class="u">${closed.length ? pLabel(closed[0]) + ' – ' + pLabel(closed[closed.length-1]) + ': ₹' + fmt(tc.sv,0) + ' L sales vs ₹' + fmt(tc.o,0) + ' L booked' : 'No closed months yet'}</div></div>
+      ${nc ? `<div class="card" style="--c:var(--fc)"><div class="lbl">${pLabel(nextP)} outlook</div><div class="n">${obPct(nc.s, nc.ob)}</div><div class="u">Forecast sales ₹${nc.s ? fmt(nc.s.v,0) : '—'} L vs ₹${fmt(nc.ob,0)} L booked</div></div>` : ''}
+    </div>
+    <div class="panel">
+      <div class="controls" style="justify-content:space-between">
+        <div class="seg" id="obsel">${['Total', ...OB_GROUPS.map(g => g[0])].map(g => `<button data-g="${g}" class="${g===sel.g?'on':''}">${g}</button>`).join('')}</div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap"><span class="legend"><i style="background:var(--soft);outline:1px solid var(--muted)"></i>Order booking</span><span class="legend"><i style="background:var(--accent)"></i>Actual sales</span><span class="legend"><i style="background:var(--fc)"></i>Forecast sales</span></div>
+      </div>
+      <div style="overflow-x:auto;margin-top:10px">${chart}</div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead>
+        <tr><th class="t sticky" rowspan="2">Product · ₹ lakh</th>${months.map(p => `<th class="grp" colspan="3">${pLabel(p)}<br><span style="font-weight:400;color:var(--muted)">${kindLbl(p)}</span></th>`).join('')}
+          <th class="grp" colspan="3">To date<br><span style="font-weight:400;color:var(--muted)">closed months</span></th></tr>
+        <tr>${months.map(() => `<th class="bl">Order booking</th><th>Sales</th><th>Sales ÷ OB</th>`).join('')}<th class="bl">Order booking</th><th>Sales</th><th>Sales ÷ OB</th></tr>
+      </thead>
+      <tbody>${rows.map(r => line(r)).join('')}${line(total, 'tot')}</tbody>
+    </table></div>
+    <p class="note">Order booking = finance's projection (${esc(OB.file)}${OB.rupees ? ', converted from ₹ to ₹ lakh' : ''}). Sales = net sales of the dashboard SKUs in each product group:
+      Pulley = TLP + TLB + V COOL, Coupling = all 8 coupling types, SMSR, PHGM, VibroMotor = VM (FH not included).
+      Closed months use actual sales; the next 3 months use the forecast from <b>${esc(modelInfo(CALC.model).label)}</b> (shaded). "To date" adds up closed months only.
+      Orders booked in one month can turn into sales later, so single months can swing; the to-date figure is steadier.</p>`;
+  document.querySelectorAll('#obsel button').forEach(b => b.onclick = () => { OBSEL = b.dataset.g; renderOB(); });
+}
+
 /* ---- backtest: 1-month-ahead forecasts for each of the last 6 months ---- */
 let BT = null, BTAT = {};
 const getBT = () => BT || (BT = backtest());
@@ -734,6 +847,12 @@ function exportExcel(){
     ['Sales data', pLabel(DB.p0) + ' – ' + pLabel(DB.p0 + DB.T - 1)], ['Exported', new Date().toLocaleString('en-IN')]];
   if (CALC.model === 'best') for (const [c, m] of Object.entries(CALC.pick)) info.push(['Model used for ' + c, MODELS[m].label]);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(info), 'About');
+  if (OB){
+    const {rows, total} = obTable(), ob = [['Product','Month','Order booking (₹ lakh)','Sales (₹ lakh)','Sales basis','Sales ÷ Order booking %']];
+    for (const r of [...rows, total]) for (const c of r.cells) ob.push([r.g, pLabel(c.p), c.ob == null ? '' : +c.ob.toFixed(2), c.s ? +c.s.v.toFixed(2) : '',
+      c.s ? (c.s.kind === 'a' ? 'Actual' : 'Forecast (' + modelInfo(CALC.model).label + ')') : 'No forecast yet', c.s && c.ob ? +(c.s.v / c.ob * 100).toFixed(1) : '']);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ob), 'Order booking vs sales');
+  }
   XLSX.writeFile(wb, `sales-forecast-${pLabel(DB.p0 + DB.T - 1).replace(' ','-')}-${CALC.model}.xlsx`);
 }
 
@@ -747,9 +866,17 @@ const tick = () => new Promise(r => setTimeout(r, 20));
 
 async function applyUpload(){
   const files = [...$('fSales').files];
-  if (!files.length){ log('Add at least one sales file.', 'err'); return; }
+  const obFile = $('fOB').files[0];
+  if (!files.length && !(obFile && DB)){ log(obFile ? 'Upload your sales files as well (no sales data is loaded yet).' : 'Add at least one sales file.', 'err'); return; }
   $('btnApply').disabled = true; $('log').innerHTML = '';
   try {
+    if (obFile){
+      const ob = await readOB(obFile);
+      store.set('fc-ob', ob); OB = ob;
+      const ms = Object.keys(ob.months).map(Number).sort((a,b) => a - b);
+      log(`Order booking: ${OB_GROUPS.filter(g => ms.some(p => ob.months[p][g[0]] != null)).length} products, ${pLabel(ms[0])} – ${pLabel(ms[ms.length-1])}${ob.rupees ? ' (read as ₹, converted to ₹ lakh)' : ' (read as ₹ lakh)'}.`, 'good');
+      if (!files.length){ compute(); render(); log('Order booking updated. Open the Order booking tab.'); return; }
+    }
     let overridden = false;
     if ($('fDash').files[0]){
       const wb = await readWB($('fDash').files[0]);
