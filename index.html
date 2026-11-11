@@ -652,7 +652,7 @@ function renderSkuAcc(){
 /* ---- actual order booking vs forecast sales ---- */
 const OB_GROUPS = [['Pulley',['TLP','TLB','V COOL']], ['Coupling',['EFBC','EFGC','ESSEX','FBC','FGC','FRC','FTC','HRC']],
                    ['FH',['FH']], ['SMSR',['SMSR']], ['PHGM',['PHGM']], ['VibroMotor',['VM']]];
-let OBK = store.get('fc-obk', null), OBSEL = 'Total', OBVIEW = 'grp', OBCAT = 'TLP', OBUNIT = store.get('fc-obunit', 'v'), OBQ = '';
+let OBOPEN = new Set(store.get('fc-obopen', ['Pulley','Coupling'])), OBK = store.get('fc-obk', null), OBSEL = 'Total', OBVIEW = 'grp', OBCAT = 'TLP', OBUNIT = store.get('fc-obunit', 'v'), OBQ = '';
 store.del('fc-ob');                                    // finance projections feature removed in v1.5
 function readBookings(wb, name){
   const out = [];
@@ -736,7 +736,14 @@ function renderOB(){
   const allIdx = obRowsFor(OB_GROUPS.flatMap(g => g[1]));
   const totalRow = {g:'Total', cells: months.map(p => obCell(allIdx, p))};
   if (OBVIEW === 'grp'){
-    body = `<div class="tablewrap"><table>${head('Product')}<tbody>${grpRows.map(r => `<tr><td class="t sticky">${esc(r.g)}</td>${cellsHtml(r.cells, sum(r.cells))}</tr>`).join('')}
+    const multi = OB_GROUPS.filter(g => g[1].length > 1).map(g => g[0]);
+    body = `<div class="controls" style="margin-bottom:8px"><button id="obexp">${multi.every(g => OBOPEN.has(g)) ? 'Collapse all' : 'Expand all'}</button>
+        <span class="muted" style="font-size:13px">Click Pulley or Coupling to show or hide its sub-categories.</span></div>
+      <div class="tablewrap"><table>${head('Product')}<tbody>${grpRows.map((r, gi) => {
+        const cats = OB_GROUPS[gi][1], can = cats.length > 1, open = can && OBOPEN.has(r.g);
+        let h = `<tr ${can ? `data-og="${esc(r.g)}" style="cursor:pointer"` : ''} class="${open ? 'g' : ''}"><td class="t sticky">${can ? (open ? '▾ ' : '▸ ') : ''}${esc(r.g)}</td>${cellsHtml(r.cells, sum(r.cells))}</tr>`;
+        if (open) for (const c of cats){ const cc = months.map(p => obCell(obRowsFor([c]), p)); h += `<tr class="sub1"><td class="t sticky">${esc(c)}</td>${cellsHtml(cc, sum(cc))}</tr>`; }
+        return h; }).join('')}
       <tr class="tot"><td class="t sticky">Total</td>${cellsHtml(totalRow.cells, sum(totalRow.cells))}</tr></tbody></table></div>`;
   } else {
     const allCats = SECTIONS.flatMap(s => s.cats);
@@ -784,6 +791,9 @@ function renderOB(){
       Difference = forecast − booked. ${OBK.partial ? pLabel(OBK.partial.p) + ' only has bookings to ' + OBK.partial.day + ' ' + MON[OBK.partial.p % 12] + ', so it is shown but left out of totals.' : ''}</p>`;
   document.querySelectorAll('#obsel button').forEach(b => b.onclick = () => { OBSEL = b.dataset.g; renderOB(); });
   document.querySelectorAll('#obview button').forEach(b => b.onclick = () => { OBVIEW = b.dataset.v; renderOB(); });
+  document.querySelectorAll('tr[data-og]').forEach(tr => tr.onclick = () => { const g = tr.dataset.og; OBOPEN.has(g) ? OBOPEN.delete(g) : OBOPEN.add(g); store.set('fc-obopen', [...OBOPEN]); renderOB(); });
+  const ex = $('obexp'); if (ex) ex.onclick = () => { const multi = OB_GROUPS.filter(g => g[1].length > 1).map(g => g[0]); const all = multi.every(g => OBOPEN.has(g));
+    OBOPEN = new Set(all ? [] : multi); store.set('fc-obopen', [...OBOPEN]); renderOB(); };
   document.querySelectorAll('#obunit button').forEach(b => b.onclick = () => { OBUNIT = b.dataset.u; store.set('fc-obunit', OBUNIT); renderOB(); });
   document.querySelectorAll('#obcats button').forEach(b => b.onclick = () => { OBCAT = b.dataset.c; renderOB(); });
   const q = $('obq'); if (q) q.oninput = e => { OBQ = e.target.value.trim().toLowerCase(); const pos = e.target.selectionStart; renderOB(); const x = $('obq'); x.focus(); x.setSelectionRange(pos, pos); };
