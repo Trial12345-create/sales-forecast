@@ -77,6 +77,18 @@ tr.dim td{color:var(--muted)}
 tbody tr:hover td{background:var(--soft)}
 tbody tr:hover td.fc{background:color-mix(in srgb,var(--fc-bg) 70%,var(--soft))}
 .vt{margin-bottom:12px;gap:12px}
+.filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.fl{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-left:4px}
+.ms{position:relative}
+.msbtn{display:flex;gap:6px;align-items:center;max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msbtn b{overflow:hidden;text-overflow:ellipsis}
+.mspanel{position:absolute;z-index:20;top:calc(100% + 4px);left:0;width:min(340px,calc(100vw - 32px));background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:10px}
+.mspanel .msq{width:100%;margin-bottom:8px}
+.msact{display:flex;gap:8px;margin-bottom:6px}.msact button{padding:4px 10px;font-size:12px}
+.mslist{max-height:300px;overflow:auto;display:flex;flex-direction:column}
+.mslist label{display:flex;gap:8px;align-items:center;padding:5px 6px;border-radius:6px;font-size:13px;cursor:pointer}
+.mslist label:hover{background:var(--soft)}
+button.link{border:0;background:none;color:var(--accent);padding:4px 6px;text-decoration:underline}
 .pair{display:flex;gap:2px;align-items:flex-end;justify-content:center;margin-bottom:3px}
 th.pf,td.pf{background:var(--soft)}
 .apill{display:inline-block;min-width:46px;text-align:center;padding:1px 8px;border-radius:999px;font:600 12px "IBM Plex Sans",system-ui,sans-serif;color:var(--muted);background:var(--soft)}
@@ -411,242 +423,329 @@ function mainAgg(){
   }
   return out;
 }
-let VIEW = store.get('fc-view', 'fc'), UNIT = store.get('fc-unit', 'q');
+let VIEW = store.get('fc-view', 'fc');
 function accOf(A, F){ if (A > 0) return Math.max(0, 1 - Math.abs(A - F) / A); if (Math.abs(F) < 1e-9 && Math.abs(A) < 1e-9) return 1; return null; }
 function accCls(A, F){ if (!(A > 0)) return ''; const e = Math.abs(A - F) / A; return e <= 0.10 ? 'a-good' : e <= 0.25 ? 'a-warn' : 'a-bad'; }
 const sgn = (v, d=0) => (v > 0 ? '+' : v < 0 ? '−' : '') + fmt(Math.abs(v), d);
-function accCells(A, F, d=0, first=false){
+// Forecast first, then Actual, Variance (= actual − forecast), Accuracy
+function accCells(A, F, d=0){
   const acc = accOf(A, F), cls = accCls(A, F);
-  return `<td class="${first?'bl':''}">${fmt(A,d)}</td><td class="pf">${fmt(F,d)}</td><td>${sgn(A - F, d)}</td>` +
+  return `<td class="pf bl">${fmt(F,d)}</td><td>${fmt(A,d)}</td><td>${sgn(A - F, d)}</td>` +
          `<td><span class="apill ${cls}">${acc == null ? '—' : fmt(acc*100,0) + '%'}</span></td>`;
 }
-function viewToggle(withUnit){
-  return `<div class="controls vt"><div class="seg" id="vw"><button data-v="fc" class="${VIEW==='fc'?'on':''}">Forecast</button><button data-v="acc" class="${VIEW==='acc'?'on':''}">Actual vs forecast</button></div>
-    ${withUnit && VIEW==='acc' ? `<div class="seg" id="un"><button data-u="q" class="${UNIT==='q'?'on':''}">Units</button><button data-u="v" class="${UNIT==='v'?'on':''}">₹ lakh</button></div>` : ''}</div>`;
+function viewToggle(){
+  return `<div class="controls vt"><div class="seg" id="vw"><button data-v="fc" class="${VIEW==='fc'?'on':''}">Forecast</button><button data-v="acc" class="${VIEW==='acc'?'on':''}">Actual vs forecast</button></div></div>`;
 }
 function bindToggle(fn){
-  document.querySelectorAll('#vw button').forEach(b => b.onclick = () => { VIEW = b.dataset.v; store.set('fc-view', VIEW); OPEN = null; fn(); });
-  document.querySelectorAll('#un button').forEach(b => b.onclick = () => { UNIT = b.dataset.u; store.set('fc-unit', UNIT); fn(); });
+  document.querySelectorAll('#vw button').forEach(b => b.onclick = () => { VIEW = b.dataset.v; store.set('fc-view', VIEW); OPEN = null; MSOPEN = null; fn(); });
 }
 const pickLabel = (c, k) => MODELS[CALC.pastPick[k][c]].short;
 function monthHeads(){ const {n, p0} = CALC; return [n-1, n, n+1, n+2, n+3].map(t => pLabel(p0 + t)); }
 
+/* ---- multi-select dropdown filters (empty selection = all) ---- */
+let MSOPEN = null; const MSQ = {};
+function msel(id, label, opts, sel, search=false){
+  const n = sel.size, names = opts.filter(o => sel.has(o.v)).map(o => o.l);
+  const txt = n === 0 ? 'All' : n <= 2 ? names.join(', ') : n + ' selected';
+  const q = (MSQ[id] || '').toLowerCase();
+  const list = MSOPEN === id ? opts.filter(o => !q || o.l.toLowerCase().includes(q)) : [];
+  return `<div class="ms" data-ms="${id}"><button type="button" class="msbtn" aria-expanded="${MSOPEN===id}"><span class="muted">${esc(label)}:</span> <b>${esc(txt)}</b> <span aria-hidden="true">▾</span></button>
+    ${MSOPEN === id ? `<div class="mspanel">${search ? `<input type="search" class="msq" placeholder="Type to search…" value="${esc(MSQ[id] || '')}">` : ''}
+      <div class="msact"><button type="button" data-act="all">Select ${q ? 'shown' : 'all'}</button><button type="button" data-act="clr">Clear</button></div>
+      <div class="mslist">${list.slice(0, 500).map(o => `<label><input type="checkbox" value="${esc(o.v)}" ${sel.has(o.v) ? 'checked' : ''}> ${esc(o.l)}${o.sub ? ` <span class="muted">${esc(o.sub)}</span>` : ''}</label>`).join('')
+        || '<div class="muted" style="padding:6px">Nothing matches.</div>'}${list.length > 500 ? `<div class="muted" style="padding:6px">Showing 500 of ${list.length}; type to narrow.</div>` : ''}</div></div>` : ''}</div>`;
+}
+// defs: {id: {opts, sel, after}}; rerender: function
+function bindMsel(defs, rerender){
+  document.querySelectorAll('.ms').forEach(el => {
+    const id = el.dataset.ms, d = defs[id]; if (!d) return;
+    el.querySelector('.msbtn').onclick = e => { e.stopPropagation(); MSOPEN = MSOPEN === id ? null : id; rerender(); };
+    const p = el.querySelector('.mspanel'); if (!p) return;
+    p.onclick = e => e.stopPropagation();
+    p.querySelectorAll('input[type=checkbox]').forEach(cb => cb.onchange = () => { cb.checked ? d.sel.add(cb.value) : d.sel.delete(cb.value); d.after && d.after(); rerender(); });
+    p.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
+      const q = (MSQ[id] || '').toLowerCase();
+      if (b.dataset.act === 'clr') d.sel.clear(); else d.opts.filter(o => !q || o.l.toLowerCase().includes(q)).forEach(o => d.sel.add(o.v));
+      d.after && d.after(); rerender(); });
+    const qi = p.querySelector('.msq');
+    if (qi){ qi.oninput = () => { MSQ[id] = qi.value; const pos = qi.selectionStart; rerender(); const n = document.querySelector(`.ms[data-ms="${id}"] .msq`); if (n){ n.focus(); n.setSelectionRange(pos, pos); } };
+      if (document.activeElement === document.body) qi.focus(); }
+  });
+}
+document.addEventListener('click', e => { if (MSOPEN && !e.target.closest('.ms')){ MSOPEN = null; render(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && MSOPEN){ MSOPEN = null; render(); } });
+const showSeg = (id, v) => `<div class="seg" id="${id}">${[['q','Volume'],['v','Value'],['b','Both']].map(([k, l]) => `<button data-s="${k}" class="${v===k?'on':''}">${l}</button>`).join('')}</div>`;
+const sortSeg = (st, L, grouped) => `<div class="seg" id="srt">${grouped ? `<button data-o="grp" class="${st.sort==='grp'?'on':''}">Grouped</button>` : ''}<button data-o="var" class="${st.sort==='var'?'on':''}">Biggest variance</button>${!grouped ? `<button data-o="name" class="${st.sort==='name'?'on':''}">SKU name</button>` : ''}</div>
+  ${st.sort === 'var' ? `<div class="seg" id="srtm">${[0,1].map(k => `<button data-m="${k}" class="${st.sm===k?'on':''}">${L[k]}</button>`).join('')}</div>` : ''}`;
+function bindShowSort(st, rerender){
+  document.querySelectorAll('#show button').forEach(b => b.onclick = () => { st.show = b.dataset.s; rerender(); });
+  document.querySelectorAll('#srt button').forEach(b => b.onclick = () => { st.sort = b.dataset.o; rerender(); });
+  document.querySelectorAll('#srtm button').forEach(b => b.onclick = () => { st.sm = +b.dataset.m; rerender(); });
+}
+
+/* ---- Main dashboard ---- */
+const FM = {g:new Set(), s:new Set(), show:'b', sort:'var', sm:1};
+const MAIN_GROUPS = [...new Set(MAIN_ROWS.map(r => r[0]))];
+const mainSubOpts = () => MAIN_ROWS.filter(r => !FM.g.size || FM.g.has(r[0])).map(r => ({v:r[0] + '|' + r[1], l:r[1], sub:FM.g.size === 1 ? '' : r[0]}));
+const mainRowOn = r => (!FM.g.size || FM.g.has(r[0])) && (!FM.s.size || FM.s.has(r[0] + '|' + r[1]));
+function mainFilters(withSort, L){
+  return `<div class="panel filters">
+    ${msel('mg', 'Product group', MAIN_GROUPS.map(g => ({v:g, l:g})), FM.g)}
+    ${msel('ms', 'Sub-group', mainSubOpts(), FM.s)}
+    <span class="fl">Show</span>${showSeg('show', FM.show)}
+    ${withSort ? `<span class="fl">Sort</span>${sortSeg(FM, L, true)}` : ''}
+    ${FM.g.size || FM.s.size ? '<button id="fclr" class="link">Clear filters</button>' : ''}</div>`;
+}
+function bindMainFilters(){
+  bindMsel({mg:{opts:MAIN_GROUPS.map(g => ({v:g, l:g})), sel:FM.g, after:() => { const ok = new Set(mainSubOpts().map(o => o.v)); [...FM.s].forEach(v => ok.has(v) || FM.s.delete(v)); }},
+            ms:{opts:mainSubOpts(), sel:FM.s}}, renderMain);
+  bindShowSort(FM, renderMain);
+  const c = $('fclr'); if (c) c.onclick = () => { FM.g.clear(); FM.s.clear(); renderMain(); };
+}
+
+function mainAgg(){
+  const {n, rows} = CALC;
+  const out = {};
+  for (const r of rows){
+    const c = r.s.cat;
+    for (const combo of [false, true]){
+      const key = c + (combo ? '|combo' : '');
+      const a = out[key] || (out[key] = {aq:[0,0], av:[0,0], fq:[0,0,0], fv:[0,0,0], pq:[0,0], pv:[0,0]});
+      const Q = combo ? r.d.cq : r.d.q, V = combo ? r.d.cv : r.d.v, F = combo ? r.cf : r.f, P = combo ? r.cprice : r.price;
+      const PF = combo ? r.pcf : r.pf, PP = combo ? r.pcp : r.pp;
+      PF.forEach((f, k) => { a.pq[k] += f; a.pv[k] += f * PP[k] / 1e5; });
+      a.aq[0] += Q[n-1] || 0; a.aq[1] += Q[n] || 0; a.av[0] += (V[n-1] || 0) / 1e5; a.av[1] += (V[n] || 0) / 1e5;
+      F.forEach((f, k) => { a.fq[k] += f; a.fv[k] += f * P / 1e5; });
+    }
+  }
+  return out;
+}
+
 function renderMain(){
   if (VIEW === 'acc') return renderMainAcc();
   const agg = mainAgg(), L = monthHeads(), bud = store.get('fc-budget', {});
+  const showQ = FM.show !== 'v', showV = FM.show !== 'q';
   const sumRows = list => { const z = {aq:[0,0], av:[0,0], fq:[0,0,0], fv:[0,0,0]}; for (const a of list) for (const k of ['aq','av','fq','fv']) a[k].forEach((v,i) => z[k][i] += v); return z; };
   const cells = a => [
-    ...a.aq.map((v,i) => `<td class="${i===0?'bl':''}">${fmt(v)}</td>`), ...a.fq.map(v => `<td class="fc">${fmt(v)}</td>`),
-    ...a.av.map((v,i) => `<td class="${i===0?'bl':''}">${fmt(v,2)}</td>`), ...a.fv.map(v => `<td class="fc">${fmt(v,2)}</td>`)].join('');
-  const groups = [...new Set(MAIN_ROWS.map(r => r[0]))];
+    ...(showQ ? [...a.aq.map((v,i) => `<td class="${i===0?'bl':''}">${fmt(v)}</td>`), ...a.fq.map(v => `<td class="fc">${fmt(v)}</td>`)] : []),
+    ...(showV ? [...a.av.map((v,i) => `<td class="${i===0?'bl':''}">${fmt(v,2)}</td>`), ...a.fv.map(v => `<td class="fc">${fmt(v,2)}</td>`)] : [])].join('');
+  const ncol = (showQ ? 5 : 0) + (showV ? 5 : 0);
   let html = '', grand = [];
-  for (const g of groups){
-    const rs = MAIN_ROWS.filter(r => r[0] === g);
+  for (const g of MAIN_GROUPS){
+    const rs = MAIN_ROWS.filter(r => r[0] === g && mainRowOn(r));
+    if (!rs.length) continue;
     const parts = [];
     rs.forEach(([grp, sg, o]) => {
       const key = grp + '|' + sg;
       const budIn = `<input class="bud" data-b="${esc(key)}" inputmode="decimal" value="${esc(bud[key] ?? '')}" placeholder="—">`;
-      if (o.todo){ html += `<tr class="dim"><td class="t sticky">${esc(grp)}</td><td class="t">${esc(sg)}</td><td>${budIn}</td><td class="t bl muted" colspan="10">Next iteration</td></tr>`; return; }
+      if (o.todo){ html += `<tr class="dim"><td class="t sticky">${esc(grp)}</td><td class="t">${esc(sg)}</td><td>${budIn}</td><td class="t bl muted" colspan="${ncol}">Next iteration</td></tr>`; return; }
       const a = agg[o.cat + (o.combo ? '|combo' : '')];
       if (!o.combo) parts.push(a);
       const used = CALC.model === 'best' && !o.combo ? `<div class="mtag">${esc(MODELS[CALC.pick[o.cat]].short)}</div>` : '';
-      html += `<tr class="${o.combo ? 'sub1' : ''}"><td class="t sticky">${esc(grp)}</td><td class="t" title="${o.combo ? 'Pulleys sold with a taper bush (already included in the row below)' : ''}">${esc(o.combo ? sg + ' ⓘ' : sg)}${used}</td><td>${budIn}</td>${cells(a)}</tr>`;
+      html += `<tr class="${o.combo ? 'sub1' : ''}"><td class="t sticky">${esc(grp)}</td><td class="t" title="${o.combo ? 'Pulleys sold with a taper bush (already included in the TLP / V COOL row)' : ''}">${esc(o.combo ? sg + ' ⓘ' : sg)}${used}</td><td>${budIn}</td>${cells(a)}</tr>`;
     });
     if (parts.length > 1){ const z = sumRows(parts); html += `<tr class="g"><td class="t sticky">${esc(g)} total</td><td></td><td></td>${cells(z)}</tr>`; }
     grand.push(...parts);
   }
-  const G = sumRows(grand);
-  html += `<tr class="tot"><td class="t sticky">Grand total</td><td></td><td></td>${cells(G)}</tr>`;
-
+  const G = sumRows(grand), filtered = FM.g.size || FM.s.size;
+  if (html) html += `<tr class="tot"><td class="t sticky">${filtered ? 'Total (filtered)' : 'Grand total'}</td><td></td><td></td>${cells(G)}</tr>`;
+  else html = `<tr><td colspan="${3 + ncol}" class="empty">No rows match the filters.</td></tr>`;
   const card = (lbl, v, u, c='') => `<div class="card" style="${c}"><div class="lbl">${lbl}</div><div class="n">${v}</div><div class="u">${u}</div></div>`;
-  $('view').innerHTML = viewToggle(false) + `
+  const big = (q, v) => showV ? ['₹' + fmt(v,1) + ' L', fmt(q) + ' units'] : [fmt(q) + ' units', '₹' + fmt(v,1) + ' L'];
+  $('view').innerHTML = viewToggle() + mainFilters(false, L) + `
     <div class="cards">
-      ${card(L[1] + ' actual', '₹' + fmt(G.av[1],1) + ' L', fmt(G.aq[1]) + ' units')}
-      ${[0,1,2].map(k => card(L[2+k] + ' forecast', '₹' + fmt(G.fv[k],1) + ' L', fmt(G.fq[k]) + ' units', '--c:var(--fc)')).join('')}
+      ${card(L[1] + ' actual', ...big(G.aq[1], G.av[1]))}
+      ${[0,1,2].map(k => card(L[2+k] + ' forecast', ...big(G.fq[k], G.fv[k]), '--c:var(--fc)')).join('')}
     </div>
     <div class="tablewrap"><table>
       <thead>
         <tr><th class="t sticky" rowspan="2">Product group</th><th class="t" rowspan="2">Sub-group</th><th rowspan="2">2026-27 (Bud.)</th>
-          <th class="grp" colspan="5">Volume (units)</th><th class="grp" colspan="5">Value (₹ lakh)</th></tr>
-        <tr>${[0,1].map(() => L.map((l,i) => `<th class="${i===0?'bl':''} ${i>=2?'fc':''}">${l}<br><span style="font-weight:400">${i<2?'Actual':'Forecast'} · n${['-1','','+1','+2','+3'][i]}</span></th>`).join('')).join('')}</tr>
+          ${showQ ? '<th class="grp" colspan="5">Volume (units)</th>' : ''}${showV ? '<th class="grp" colspan="5">Value (₹ lakh)</th>' : ''}</tr>
+        <tr>${[showQ, showV].filter(Boolean).map(() => L.map((l,i) => `<th class="${i===0?'bl':''} ${i>=2?'fc':''}">${l}<br><span style="font-weight:400">${i<2?'Actual':'Forecast'} · n${['-1','','+1','+2','+3'][i]}</span></th>`).join('')).join('')}</tr>
       </thead>
       <tbody>${html}</tbody>
     </table></div>
     <p class="note"><b>${esc(modelInfo(CALC.model).label)}:</b> ${esc(modelInfo(CALC.model).desc)}${CALC.model === 'best' ? ' The model used is shown under each sub-group.' : ''}
       Value = forecast units × each SKU's average price over the last 12 months (last known price if it had no sales).
       "TLP & TLB" and "V COOL & TLB" show the part of each line sold with a taper bush; it is already included in TLP / V COOL, so it isn't added to the totals.
-      Budget figures are saved in this browser.</p>`;
+      ${filtered ? 'Cards and totals add up the rows shown. ' : ''}Budget figures are saved in this browser.</p>`;
   document.querySelectorAll('.bud').forEach(inp => inp.onchange = () => {
     const b = store.get('fc-budget', {}); const v = inp.value.trim();
     if (v === '') delete b[inp.dataset.b]; else b[inp.dataset.b] = v; store.set('fc-budget', b);
   });
-  bindToggle(renderMain);
+  bindToggle(renderMain); bindMainFilters();
 }
 
 function renderMainAcc(){
-  const agg = mainAgg(), L = monthHeads(), val = UNIT === 'v', d = val ? 2 : 0;
-  const A = a => val ? a.av : a.aq, F = a => val ? a.pv : a.pq;
+  const agg = mainAgg(), L = monthHeads(), showQ = FM.show !== 'v', showV = FM.show !== 'q';
+  const blocks = [showQ && {A:a => a.aq, F:a => a.pq, d:0, u:'units'}, showV && {A:a => a.av, F:a => a.pv, d:2, u:'₹ lakh'}].filter(Boolean);
   const sumRows = list => { const z = {aq:[0,0], av:[0,0], pq:[0,0], pv:[0,0]}; for (const a of list) for (const k of ['aq','av','pq','pv']) a[k].forEach((v,i) => z[k][i] += v); return z; };
-  const cells = a => [0,1].map(k => accCells(A(a)[k], F(a)[k], d, true)).join('');
-  const groups = [...new Set(MAIN_ROWS.map(r => r[0]))];
+  const cells = a => [0,1].map(k => blocks.map(b => accCells(b.A(a)[k], b.F(a)[k], b.d)).join('')).join('');
+  const ncol = 8 * blocks.length;
+  const tag = o => { if (CALC.model !== 'best' || o.combo) return ''; const m0 = pickLabel(o.cat, 0), m1 = pickLabel(o.cat, 1); return `<div class="mtag">${esc(m0 === m1 ? m0 : m0 + ' / ' + m1)}</div>`; };
+  const rowHtml = (grp, sg, o, a) => `<tr class="${o.combo ? 'sub1' : ''}"><td class="t sticky">${esc(grp)}</td><td class="t">${esc(o.combo ? sg + ' ⓘ' : sg)}${tag(o)}</td>${cells(a)}</tr>`;
+  const vis = MAIN_ROWS.filter(r => mainRowOn(r));
   let html = '', grand = [];
-  for (const g of groups){
-    const parts = [];
-    for (const [grp, sg, o] of MAIN_ROWS.filter(r => r[0] === g)){
-      if (o.todo){ html += `<tr class="dim"><td class="t sticky">${esc(grp)}</td><td class="t">${esc(sg)}</td><td class="t bl muted" colspan="8">Next iteration</td></tr>`; continue; }
-      const a = agg[o.cat + (o.combo ? '|combo' : '')];
-      if (!o.combo) parts.push(a);
-      const m0 = pickLabel(o.cat, 0), m1 = pickLabel(o.cat, 1);
-      const used = CALC.model === 'best' && !o.combo ? `<div class="mtag">${esc(m0 === m1 ? m0 : m0 + ' / ' + m1)}</div>` : '';
-      html += `<tr class="${o.combo ? 'sub1' : ''}"><td class="t sticky">${esc(grp)}</td><td class="t">${esc(o.combo ? sg + ' ⓘ' : sg)}${used}</td>${cells(a)}</tr>`;
+  const sb = showV ? 'v' : 'q';                      // variance sort uses value when value is shown
+  if (FM.sort === 'var'){
+    const live = vis.filter(r => !r[2].todo).map(r => ({r, a: agg[r[2].cat + (r[2].combo ? '|combo' : '')]}));
+    live.forEach(x => { if (!x.r[2].combo) grand.push(x.a); });
+    live.sort((x, y) => { const vx = sb === 'v' ? x.a.av[FM.sm] - x.a.pv[FM.sm] : x.a.aq[FM.sm] - x.a.pq[FM.sm], vy = sb === 'v' ? y.a.av[FM.sm] - y.a.pv[FM.sm] : y.a.aq[FM.sm] - y.a.pq[FM.sm]; return Math.abs(vy) - Math.abs(vx); });
+    html = live.map(x => rowHtml(x.r[0], x.r[1], x.r[2], x.a)).join('');
+  } else {
+    for (const g of MAIN_GROUPS){
+      const rs = vis.filter(r => r[0] === g); if (!rs.length) continue;
+      const parts = [];
+      for (const [grp, sg, o] of rs){
+        if (o.todo){ html += `<tr class="dim"><td class="t sticky">${esc(grp)}</td><td class="t">${esc(sg)}</td><td class="t bl muted" colspan="${ncol}">Next iteration</td></tr>`; continue; }
+        const a = agg[o.cat + (o.combo ? '|combo' : '')];
+        if (!o.combo) parts.push(a);
+        html += rowHtml(grp, sg, o, a);
+      }
+      if (parts.length > 1) html += `<tr class="g"><td class="t sticky">${esc(g)} total</td><td></td>${cells(sumRows(parts))}</tr>`;
+      grand.push(...parts);
     }
-    if (parts.length > 1) html += `<tr class="g"><td class="t sticky">${esc(g)} total</td><td></td>${cells(sumRows(parts))}</tr>`;
-    grand.push(...parts);
   }
-  const G = sumRows(grand);
-  html += `<tr class="tot"><td class="t sticky">Grand total</td><td></td>${cells(G)}</tr>`;
-  const card = k => { const a = accOf(G.aq[k], G.pq[k]), b = accOf(G.av[k], G.pv[k]);
-    return `<div class="card" style="--c:var(--ok)"><div class="lbl">${L[k]} accuracy</div><div class="n">${a == null ? '—' : fmt(a*100,0) + '%'}</div>
-      <div class="u">Units: actual ${fmt(G.aq[k])} vs forecast ${fmt(G.pq[k])}<br>Value: ${b == null ? '—' : fmt(b*100,0) + '%'} · ₹${fmt(G.av[k],1)} L vs ₹${fmt(G.pv[k],1)} L</div></div>`; };
-  const sku = skuAcc(CALC.rows);
-  $('view').innerHTML = viewToggle(true) + `
+  const G = sumRows(grand), filtered = FM.g.size || FM.s.size;
+  if (html) html += `<tr class="tot"><td class="t sticky">${filtered ? 'Total (filtered)' : 'Grand total'}</td><td></td>${cells(G)}</tr>`;
+  else html = `<tr><td colspan="${2 + ncol}" class="empty">No rows match the filters.</td></tr>`;
+  const card = k => { const a = accOf(G.aq[k], G.pq[k]), b = accOf(G.av[k], G.pv[k]), main = showV && !showQ ? b : a;
+    return `<div class="card" style="--c:var(--ok)"><div class="lbl">${L[k]} accuracy${showV && !showQ ? ' (value)' : ''}</div><div class="n">${main == null ? '—' : fmt(main*100,0) + '%'}</div>
+      <div class="u">Units: forecast ${fmt(G.pq[k])} vs actual ${fmt(G.aq[k])}<br>Value: ${b == null ? '—' : fmt(b*100,0) + '%'} · forecast ₹${fmt(G.pv[k],1)} L vs actual ₹${fmt(G.av[k],1)} L</div></div>`; };
+  const selRows = CALC.rows.filter(r => vis.some(v => !v[2].todo && !v[2].combo && v[2].cat === r.s.cat));
+  const sku = skuAcc(selRows);
+  $('view').innerHTML = viewToggle() + mainFilters(true, L) + `
     <div class="cards">${card(0)}${card(1)}
       <div class="card" style="--c:var(--muted)"><div class="lbl">SKU-level accuracy</div><div class="n">${sku[1] == null ? '—' : fmt(sku[1]*100,0) + '%'}</div>
-        <div class="u">${L[1]} across all SKUs (${L[0]}: ${sku[0] == null ? '—' : fmt(sku[0]*100,0) + '%'}). Lower than category accuracy because over- and under-forecasts don't cancel out.</div></div>
+        <div class="u">${L[1]} across ${filtered ? 'the SKUs shown' : 'all SKUs'} (${L[0]}: ${sku[0] == null ? '—' : fmt(sku[0]*100,0) + '%'}). Lower than category accuracy because over- and under-forecasts don't cancel out.</div></div>
     </div>
     <div class="tablewrap"><table>
       <thead>
         <tr><th class="t sticky" rowspan="2">Product group</th><th class="t" rowspan="2">Sub-group</th>
-          ${[0,1].map(k => `<th class="grp" colspan="4">${L[k]} (n${k===0?'-1':''}) · ${val ? '₹ lakh' : 'units'}</th>`).join('')}</tr>
-        <tr>${[0,1].map(() => `<th class="bl">Actual</th><th class="pf">Forecast</th><th>Variance</th><th>Accuracy</th>`).join('')}</tr>
+          ${[0,1].map(k => blocks.map(b => `<th class="grp" colspan="4">${L[k]} (n${k===0?'-1':''}) · ${b.u}</th>`).join('')).join('')}</tr>
+        <tr>${[0,1].map(() => blocks.map(() => `<th class="pf bl">Forecast</th><th>Actual</th><th>Variance</th><th>Accuracy</th>`).join('')).join('')}</tr>
       </thead>
       <tbody>${html}</tbody>
     </table></div>
     <p class="note"><b>How this works:</b> each month's forecast is the one the model would have made a month earlier, using only the sales data available then
       (${L[1]} is compared with the forecast made after ${L[0]} closed). ${CALC.model === 'best' ? 'With Best per category, the model is the one Best would have chosen at that time, shown under each sub-group (' + L[0] + ' / ' + L[1] + ' if it changed). ' : ''}
       Variance = actual − forecast. Accuracy = 100% − |actual − forecast| ÷ actual. <span class="apill a-good">within 10%</span> <span class="apill a-warn">10–25%</span> <span class="apill a-bad">over 25%</span>.
-      Forecast value uses the 12-month average price as it was at the time.</p>`;
-  bindToggle(renderMain);
+      ${FM.sort === 'var' ? `Sorted by the biggest ${L[FM.sm]} variance in ${sb === 'v' ? 'value' : 'units'}, either direction; "Grouped" restores the product-group layout. ` : ''}Forecast value uses the 12-month average price as it was at the time.</p>`;
+  bindToggle(renderMain); bindMainFilters();
 }
 function skuAcc(rows){   // SKU-level accuracy = 1 − Σ|A−F| ÷ ΣA, for months n-1 and n
   const {n} = CALC;
   return [0,1].map(k => { let e = 0, a = 0; for (const r of rows){ const A = r.d.q[n - 1 + k]; e += Math.abs(A - r.pf[k]); a += Math.max(0, A); } return a > 0 ? Math.max(0, 1 - e / a) : null; });
 }
 
+/* ---- SKU detail ---- */
+const FS = {g:new Set(['Pulley']), s:new Set(['TLP']), k:new Set(), show:'q', sort:'var', sm:1};
+const skuCatOpts = () => SECTIONS.filter(s => !FS.g.size || FS.g.has(s.name)).flatMap(s => s.cats.map(c => ({v:c, l:c, sub:FS.g.size === 1 ? '' : s.name})));
+const skuCats = () => FS.s.size ? [...FS.s] : skuCatOpts().map(o => o.v);
+const skuNameOpts = () => { const cs = new Set(skuCats()); return CALC.rows.filter(r => cs.has(r.s.cat)).map(r => ({v:r.s.name, l:r.s.name, sub:cs.size > 1 ? r.s.cat : ''})); };
+function skuScope(){ const cs = new Set(skuCats()); return CALC.rows.filter(r => cs.has(r.s.cat) && (!FS.k.size || FS.k.has(r.s.name)) && (!ONLY12 || r.sold12)); }
+function skuFilters(L, acc){
+  return `<div class="panel filters">
+    ${msel('sg', 'Product group', SECTIONS.map(s => ({v:s.name, l:s.name})), FS.g)}
+    ${msel('ss', 'Sub-group', skuCatOpts(), FS.s)}
+    ${msel('sk', 'SKU', skuNameOpts(), FS.k, true)}
+    ${acc ? `<span class="fl">Show</span>${showSeg('show', FS.show)}<span class="fl">Sort</span>${sortSeg(FS, L, false)}` : ''}
+    <label class="chk"><input type="checkbox" id="only12" ${ONLY12?'checked':''}> Only SKUs sold in the last 12 months</label>
+    ${FS.g.size || FS.s.size || FS.k.size ? '<button id="fclr" class="link">Clear filters</button>' : ''}</div>`;
+}
+function bindSkuFilters(){
+  const prune = () => { const ok = new Set(skuCatOpts().map(o => o.v)); [...FS.s].forEach(v => ok.has(v) || FS.s.delete(v)); const okk = new Set(skuNameOpts().map(o => o.v)); [...FS.k].forEach(v => okk.has(v) || FS.k.delete(v)); };
+  bindMsel({sg:{opts:SECTIONS.map(s => ({v:s.name, l:s.name})), sel:FS.g, after:prune}, ss:{opts:skuCatOpts(), sel:FS.s, after:prune}, sk:{opts:skuNameOpts(), sel:FS.k}}, renderSku);
+  bindShowSort(FS, renderSku);
+  $('only12').onchange = e => { ONLY12 = e.target.checked; renderSku(); };
+  const c = $('fclr'); if (c) c.onclick = () => { FS.g.clear(); FS.s.clear(); FS.k.clear(); renderSku(); };
+  document.querySelectorAll('tbody tr[data-i]').forEach(tr => tr.onclick = () => { const i = +tr.dataset.i; OPEN = OPEN === i ? null : i; renderSku(); });
+}
+const scopeLabel = cats => cats.length === 1 ? cats[0] : cats.length <= 3 ? cats.join(' + ') : cats.length + ' sub-groups';
+
 function renderSku(){
   if (VIEW === 'acc') return renderSkuAcc();
-  const sec = SECTIONS.find(s => s.name === SECTION);
-  if (!sec.cats.includes(CAT)) CAT = sec.cats[0];
-  const L = monthHeads();
-  const all = CALC.rows.filter(r => r.s.cat === CAT);
-  let view = all.filter(r => (!ONLY12 || r.sold12) && (!Q || r.s.name.toLowerCase().includes(Q)));
-  const keys = {name:r => r.s.name, avg12:r => r.avg12, min:r => r.minStock, f1:r => r.f[0], f2:r => r.f[1], f3:r => r.f[2]};
+  const L = monthHeads(), cats = skuCats(), multi = cats.length > 1;
+  let view = skuScope();
+  const keys = {name:r => r.s.name, cat:r => r.s.cat, avg12:r => r.avg12, min:r => r.minStock, f1:r => r.f[0], f2:r => r.f[1], f3:r => r.f[2]};
   if (!keys[SORT.k]) SORT = {k:'avg12', d:-1};
   const key = keys[SORT.k];
   view.sort((a,b) => { const x = key(a), y = key(b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * SORT.d; });
   const tot = view.reduce((z,r) => (z.a += r.avg12, z.m += r.minStock, r.f.forEach((v,k) => z.f[k] += v), z), {a:0, m:0, f:[0,0,0]});
-  const cnt = c => CALC.rows.filter(r => r.s.cat === c && (!ONLY12 || r.sold12)).length;
   const head = (k, l, cls='') => `<th data-k="${k}" class="${cls}">${l}${SORT.k===k ? (SORT.d>0?' ▲':' ▼') : ''}</th>`;
-  const {n, p0} = CALC;
+  const {n, p0} = CALC, nc = multi ? 8 : 7;
+  const models = [...new Set(cats.map(c => CALC.pick[c]))];
   const rowsHtml = view.map(r => {
     const h = r.d.q.slice(Math.max(0, n - 11), n + 1), max = Math.max(1, ...h, ...r.f);
     const spark = `<svg class="spark" width="120" height="22" viewBox="0 0 120 22">${h.concat(r.f).map((v,j) => { const hh = Math.max(0,v)/max*20; return `<rect x="${j*8}" y="${21-hh}" width="6" height="${hh||0.5}" fill="var(${j>=12?'--fc':'--accent'})" opacity="${j>=12?1:.6}"/>`; }).join('')}</svg>`;
-    let html = `<tr data-i="${r.s.i}" style="cursor:pointer" class="${r.sold12 ? '' : 'dim'}"><td class="t sticky">${esc(r.s.name)}</td>
+    let html = `<tr data-i="${r.s.i}" style="cursor:pointer" class="${r.sold12 ? '' : 'dim'}"><td class="t sticky">${esc(r.s.name)}</td>${multi ? `<td class="t">${esc(r.s.cat)}</td>` : ''}
       <td>${fmtQ(r.avg12)}</td><td><b>${fmt(r.minStock)}</b></td>${r.f.map(v => `<td class="fc">${fmtQ(v)}</td>`).join('')}<td>${spark}</td></tr>`;
     if (OPEN === r.s.i){
       const from = Math.max(0, n - 23), hist = r.d.q.slice(from, n + 1), all = hist.concat(r.f), mx = Math.max(1, ...all.map(v => Math.max(0,v)));
-      html += `<tr class="detail"><td colspan="7"><div style="overflow-x:auto"><div class="bars">${all.map((v,j) => {
+      html += `<tr class="detail"><td colspan="${nc}"><div style="overflow-x:auto"><div class="bars">${all.map((v,j) => {
         const t = from + j; return `<div class="${t>n?'f':''}"><b>${fmtQ(v)}</b><i style="height:${Math.max(0,v)/mx*70}px"></i>${pLabel(p0+t)}</div>`; }).join('')}</div></div>
-        <div class="note">Price used for value: ₹${fmt(r.price,0)} per unit · last 12 months sold ${fmt(r.avg12*12)} units · <span class="legend"><i style="background:var(--accent)"></i>actual</span> <span class="legend"><i style="background:var(--fc)"></i>forecast</span></div></td></tr>`;
+        <div class="note">Price used for value: ₹${fmt(r.price,0)} per unit · last 12 months sold ${fmt(r.avg12*12)} units · model ${esc(MODELS[r.model].label)} · <span class="legend"><i style="background:var(--accent)"></i>actual</span> <span class="legend"><i style="background:var(--fc)"></i>forecast</span></div></td></tr>`;
     }
     return html;
   }).join('');
-  $('view').innerHTML = viewToggle(false) + `
-    <div class="panel">
-      <div class="seg big" id="secs">${SECTIONS.map(s => `<button data-s="${s.name}" class="${s.name===SECTION?'on':''}">${s.name}</button>`).join('')}</div>
-      <div class="seg" id="cats" style="margin-top:12px">${sec.cats.map(c => `<button data-c="${c}" class="${c===CAT?'on':''}">${c}<span class="k">${cnt(c)}</span></button>`).join('')}</div>
-      <div class="controls" style="margin-top:12px">
-        <input type="search" id="q" placeholder="Search SKU…" value="${esc(Q)}">
-        <label class="chk"><input type="checkbox" id="only12" ${ONLY12?'checked':''}> Only SKUs sold in the last 12 months</label>
-      </div>
-    </div>
-    <div class="count">Showing ${view.length} of ${all.length} ${esc(CAT)} SKUs · forecast model: <b>${esc(MODELS[CALC.pick[CAT]].label)}</b>${CALC.model === 'best' ? ' (best for ' + esc(CAT) + ')' : ''} · tap a row for its monthly history</div>
+  $('view').innerHTML = viewToggle() + skuFilters(L, false) + `
+    <div class="count">Showing ${view.length} SKUs in ${esc(scopeLabel(cats))} · forecast model: <b>${models.length === 1 ? esc(MODELS[models[0]].label) : 'varies by sub-group'}</b>${CALC.model === 'best' ? ' (Best per category)' : ''} · tap a row for its monthly history</div>
     <div class="tablewrap"><table class="sortable">
-      <thead><tr>${head('name','SKU','t sticky')}${head('avg12','Last 12-mo avg')}${head('min','Min stock')}
+      <thead><tr>${head('name','SKU','t sticky')}${multi ? head('cat','Sub-group','t') : ''}${head('avg12','Last 12-mo avg')}${head('min','Min stock')}
         ${head('f1', L[2] + ' (n+1)', 'fc')}${head('f2', L[3] + ' (n+2)', 'fc')}${head('f3', L[4] + ' (n+3)', 'fc')}<th>12 mo + forecast</th></tr></thead>
       <tbody>
-        <tr class="g"><td class="t sticky">${esc(CAT)} total (${view.length})</td><td>${fmt(tot.a,1)}</td><td>${fmt(tot.m)}</td>${tot.f.map(v => `<td class="fc">${fmt(v)}</td>`).join('')}<td></td></tr>
-        ${rowsHtml || `<tr><td colspan="7" class="empty">No SKUs match.</td></tr>`}
+        <tr class="g"><td class="t sticky">Total (${view.length})</td>${multi ? '<td></td>' : ''}<td>${fmt(tot.a,1)}</td><td>${fmt(tot.m)}</td>${tot.f.map(v => `<td class="fc">${fmt(v)}</td>`).join('')}<td></td></tr>
+        ${rowsHtml || `<tr><td colspan="${nc}" class="empty">No SKUs match the filters.</td></tr>`}
       </tbody>
     </table></div>
-    <p class="note">Min stock = the highest of the next 3 months' forecast (rounded up). Last 12-mo avg = net units sold ${pLabel(p0+n-11)} – ${pLabel(p0+n)} ÷ 12. Greyed rows had no sales in the last 12 months.</p>`;
-  document.querySelectorAll('#secs button').forEach(b => b.onclick = () => { SECTION = b.dataset.s; CAT = SECTIONS.find(s => s.name === SECTION).cats[0]; OPEN = null; renderSku(); });
-  document.querySelectorAll('#cats button').forEach(b => b.onclick = () => { CAT = b.dataset.c; OPEN = null; renderSku(); });
-  $('q').oninput = e => { Q = e.target.value.trim().toLowerCase(); const pos = e.target.selectionStart; renderSku(); const q = $('q'); q.focus(); q.setSelectionRange(pos,pos); };
-  $('only12').onchange = e => { ONLY12 = e.target.checked; renderSku(); };
-  document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => { const k = th.dataset.k; if (SORT.k === k) SORT.d *= -1; else SORT = {k, d: k === 'name' ? 1 : -1}; renderSku(); });
-  document.querySelectorAll('tbody tr[data-i]').forEach(tr => tr.onclick = () => { const i = +tr.dataset.i; OPEN = OPEN === i ? null : i; renderSku(); });
-  bindToggle(renderSku);
+    <p class="note">Min stock = the highest of the next 3 months' forecast (rounded up). Last 12-mo avg = net units sold ${pLabel(p0+n-11)} – ${pLabel(p0+n)} ÷ 12. Greyed rows had no sales in the last 12 months. Use the SKU filter to pick one or more SKUs; leave it on "All" to see every SKU in the chosen sub-groups.</p>`;
+  document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => { const k = th.dataset.k; if (SORT.k === k) SORT.d *= -1; else SORT = {k, d: (k === 'name' || k === 'cat') ? 1 : -1}; renderSku(); });
+  bindToggle(renderSku); bindSkuFilters();
 }
 
 function renderSkuAcc(){
-  const sec = SECTIONS.find(s => s.name === SECTION);
-  if (!sec.cats.includes(CAT)) CAT = sec.cats[0];
-  const L = monthHeads(), {n, p0} = CALC;
-  const all = CALC.rows.filter(r => r.s.cat === CAT);
-  let view = all.filter(r => (!ONLY12 || r.sold12) && (!Q || r.s.name.toLowerCase().includes(Q)));
-  const A = (r, k) => r.d.q[n - 1 + k], F = (r, k) => r.pf[k];
-  const keys = {name:r => r.s.name, a0:r => A(r,0), f0:r => F(r,0), v0:r => Math.abs(A(r,0) - F(r,0)), c0:r => accOf(A(r,0), F(r,0)) ?? -1,
-                a1:r => A(r,1), f1:r => F(r,1), v1:r => Math.abs(A(r,1) - F(r,1)), c1:r => accOf(A(r,1), F(r,1)) ?? -1};
-  const key = keys[SORT.k] || keys.v1; if (!keys[SORT.k]) SORT = {k:'v1', d:-1};
-  view.sort((a,b) => { const x = key(a), y = key(b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * SORT.d; });
-  const tot = [0,1].map(k => view.reduce((z,r) => (z.a += A(r,k), z.f += F(r,k), z), {a:0, f:0}));
+  const L = monthHeads(), {n, p0} = CALC, cats = skuCats(), multi = cats.length > 1;
+  const showQ = FS.show !== 'v', showV = FS.show !== 'q';
+  const A = (r, k) => r.d.q[n - 1 + k], F = (r, k) => r.pf[k], AV = (r, k) => r.d.v[n - 1 + k] / 1e5, FV = (r, k) => r.pf[k] * r.pp[k] / 1e5;
+  const blocks = [showQ && {A, F, d:0, u:'units'}, showV && {A:AV, F:FV, d:2, u:'₹ lakh'}].filter(Boolean);
+  let view = skuScope();
+  const sb = showV ? 'v' : 'q';
+  if (FS.sort === 'name') view.sort((a, b) => a.s.name.localeCompare(b.s.name));
+  else view.sort((a, b) => sb === 'v' ? Math.abs(AV(b, FS.sm) - FV(b, FS.sm)) - Math.abs(AV(a, FS.sm) - FV(a, FS.sm)) : Math.abs(A(b, FS.sm) - F(b, FS.sm)) - Math.abs(A(a, FS.sm) - F(a, FS.sm)));
+  const tot = blocks.map(b => [0,1].map(k => view.reduce((z, r) => (z.a += b.A(r,k), z.f += b.F(r,k), z), {a:0, f:0})));
+  const cells = (getA, getF) => [0,1].map(k => blocks.map(b => accCells(getA(b, k), getF(b, k), b.d)).join('')).join('');
   const sk = skuAcc(view);
-  const cnt = c => CALC.rows.filter(r => r.s.cat === c && (!ONLY12 || r.sold12)).length;
-  const head = (k, l, cls='') => `<th data-k="${k}" class="${cls}">${l}${SORT.k===k ? (SORT.d>0?' ▲':' ▼') : ''}</th>`;
-  const m0 = pickLabel(CAT, 0), m1 = pickLabel(CAT, 1);
+  const nc = 1 + (multi ? 1 : 0) + 8 * blocks.length;
+  const ms = [...new Set(cats.map(c => pickLabel(c, 0) + ' / ' + pickLabel(c, 1)))];
   const rowsHtml = view.map(r => {
-    let html = `<tr data-i="${r.s.i}" style="cursor:pointer" class="${r.sold12 ? '' : 'dim'}"><td class="t sticky">${esc(r.s.name)}</td>
-      ${[0,1].map(k => accCells(A(r,k), F(r,k), 0, true)).join('')}</tr>`;
+    let html = `<tr data-i="${r.s.i}" style="cursor:pointer" class="${r.sold12 ? '' : 'dim'}"><td class="t sticky">${esc(r.s.name)}</td>${multi ? `<td class="t">${esc(r.s.cat)}</td>` : ''}
+      ${cells((b, k) => b.A(r, k), (b, k) => b.F(r, k))}</tr>`;
     if (OPEN === r.s.i){
       const from = Math.max(0, n - 11), hist = r.d.q.slice(from, n + 1), mx = Math.max(1, ...hist.map(v => Math.max(0,v)), ...r.pf);
       const bar = (v, c, w) => `<i style="height:${Math.max(0,v)/mx*70}px;width:${w};margin:0;${c ? 'background:var(--fc)' : ''}"></i>`;
-      html += `<tr class="detail"><td colspan="9"><div style="overflow-x:auto"><div class="bars">${hist.map((v,j) => { const t = from + j, k = t - (n - 1);
-        return `<div><b>${fmtQ(v)}${k >= 0 ? ' / ' + fmtQ(r.pf[k]) : ''}</b><span class="pair">${k >= 0 ? bar(v, false, '40%') + bar(r.pf[k], true, '40%') : bar(v, false, '72%')}</span>${pLabel(p0+t)}</div>`; }).join('')}</div></div>
-        <div class="note"><span class="legend"><i style="background:var(--accent)"></i>actual</span> <span class="legend"><i style="background:var(--fc)"></i>forecast made a month before</span> · last 12 months shown</div></td></tr>`;
+      html += `<tr class="detail"><td colspan="${nc}"><div style="overflow-x:auto"><div class="bars">${hist.map((v,j) => { const t = from + j, k = t - (n - 1);
+        return `<div><b>${k >= 0 ? fmtQ(r.pf[k]) + ' / ' : ''}${fmtQ(v)}</b><span class="pair">${k >= 0 ? bar(r.pf[k], true, '40%') + bar(v, false, '40%') : bar(v, false, '72%')}</span>${pLabel(p0+t)}</div>`; }).join('')}</div></div>
+        <div class="note"><span class="legend"><i style="background:var(--fc)"></i>forecast made a month before</span> <span class="legend"><i style="background:var(--accent)"></i>actual</span> · units, last 12 months shown</div></td></tr>`;
     }
     return html;
   }).join('');
-  $('view').innerHTML = viewToggle(false) + `
-    <div class="panel">
-      <div class="seg big" id="secs">${SECTIONS.map(s => `<button data-s="${s.name}" class="${s.name===SECTION?'on':''}">${s.name}</button>`).join('')}</div>
-      <div class="seg" id="cats" style="margin-top:12px">${sec.cats.map(c => `<button data-c="${c}" class="${c===CAT?'on':''}">${c}<span class="k">${cnt(c)}</span></button>`).join('')}</div>
-      <div class="controls" style="margin-top:12px">
-        <input type="search" id="q" placeholder="Search SKU…" value="${esc(Q)}">
-        <label class="chk"><input type="checkbox" id="only12" ${ONLY12?'checked':''}> Only SKUs sold in the last 12 months</label>
-      </div>
-    </div>
-    <div class="count">Showing ${view.length} of ${all.length} ${esc(CAT)} SKUs · model: <b>${esc(m0 === m1 ? MODELS[CALC.pastPick[1][CAT]].label : m0 + ' (' + L[0] + ') / ' + m1 + ' (' + L[1] + ')')}</b>
-      · SKU-level accuracy ${L[0]} ${sk[0] == null ? '—' : fmt(sk[0]*100,0) + '%'}, ${L[1]} ${sk[1] == null ? '—' : fmt(sk[1]*100,0) + '%'} · sorted by ${SORT.k === 'v1' ? 'biggest ' + L[1] + ' miss' : 'your choice'}</div>
-    <div class="tablewrap"><table class="sortable">
+  $('view').innerHTML = viewToggle() + skuFilters(L, true) + `
+    <div class="count">Showing ${view.length} SKUs in ${esc(scopeLabel(cats))} · model: <b>${ms.length === 1 ? esc(ms[0].split(' / ')[0] === ms[0].split(' / ')[1] ? ms[0].split(' / ')[0] : ms[0] + ' (' + L[0] + ' / ' + L[1] + ')') : 'varies by sub-group'}</b>
+      · SKU-level accuracy ${L[0]} ${sk[0] == null ? '—' : fmt(sk[0]*100,0) + '%'}, ${L[1]} ${sk[1] == null ? '—' : fmt(sk[1]*100,0) + '%'}
+      · ${FS.sort === 'var' ? `sorted by biggest ${L[FS.sm]} variance (${sb === 'v' ? 'value' : 'units'})` : 'sorted by SKU name'}</div>
+    <div class="tablewrap"><table>
       <thead>
-        <tr><th class="t sticky" rowspan="2" data-k="name">SKU${SORT.k==='name' ? (SORT.d>0?' ▲':' ▼') : ''}</th>${[0,1].map(k => `<th class="grp" colspan="4">${L[k]} (n${k===0?'-1':''}) · units</th>`).join('')}</tr>
-        <tr>${[0,1].map(k => head('a'+k,'Actual','bl') + head('f'+k,'Forecast','pf') + head('v'+k,'Variance') + head('c'+k,'Accuracy')).join('')}</tr>
+        <tr><th class="t sticky" rowspan="2">SKU</th>${multi ? '<th class="t" rowspan="2">Sub-group</th>' : ''}${[0,1].map(k => blocks.map(b => `<th class="grp" colspan="4">${L[k]} (n${k===0?'-1':''}) · ${b.u}</th>`).join('')).join('')}</tr>
+        <tr>${[0,1].map(() => blocks.map(() => `<th class="pf bl">Forecast</th><th>Actual</th><th>Variance</th><th>Accuracy</th>`).join('')).join('')}</tr>
       </thead>
       <tbody>
-        <tr class="g"><td class="t sticky">${esc(CAT)} total (${view.length})</td>${tot.map(z => accCells(z.a, z.f, 0, true)).join('')}</tr>
-        ${rowsHtml || `<tr><td colspan="9" class="empty">No SKUs match.</td></tr>`}
+        <tr class="g"><td class="t sticky">Total (${view.length})</td>${multi ? '<td></td>' : ''}${cells((b, k) => tot[blocks.indexOf(b)][k].a, (b, k) => tot[blocks.indexOf(b)][k].f)}</tr>
+        ${rowsHtml || `<tr><td colspan="${nc}" class="empty">No SKUs match the filters.</td></tr>`}
       </tbody>
     </table></div>
-    <p class="note">Forecast = what the model would have forecast for that month one month earlier. The total row compares category totals; SKU-level accuracy (above the table) adds up each SKU's miss, so it is always lower.
-      Sort by Variance to find the biggest misses. Accuracy shows — when a SKU had no sales but was forecast to sell.</p>`;
-  document.querySelectorAll('#secs button').forEach(b => b.onclick = () => { SECTION = b.dataset.s; CAT = SECTIONS.find(s => s.name === SECTION).cats[0]; OPEN = null; renderSku(); });
-  document.querySelectorAll('#cats button').forEach(b => b.onclick = () => { CAT = b.dataset.c; OPEN = null; renderSku(); });
-  $('q').oninput = e => { Q = e.target.value.trim().toLowerCase(); const pos = e.target.selectionStart; renderSku(); const q = $('q'); q.focus(); q.setSelectionRange(pos,pos); };
-  $('only12').onchange = e => { ONLY12 = e.target.checked; renderSku(); };
-  document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => { const k = th.dataset.k; if (SORT.k === k) SORT.d *= -1; else SORT = {k, d: k === 'name' ? 1 : -1}; renderSku(); });
-  document.querySelectorAll('tbody tr[data-i]').forEach(tr => tr.onclick = () => { const i = +tr.dataset.i; OPEN = OPEN === i ? null : i; renderSku(); });
-  bindToggle(renderSku);
+    <p class="note">Forecast = what the model would have forecast for that month one month earlier. Variance = actual − forecast. The total row compares totals; SKU-level accuracy (above the table) adds up each SKU's miss, so it is always lower.
+      Biggest variance sorts by the size of the miss in either direction. Accuracy shows — when a SKU had no sales but was forecast to sell.</p>`;
+  bindToggle(renderSku); bindSkuFilters();
 }
 
 /* ---- actual order booking vs forecast sales ---- */
@@ -713,6 +812,11 @@ function obCell(rowsIdx, p){        // booking vs forecast for a set of CALC.row
   return {p, bq, bv, fq: F ? fq : null, fv: F ? fv : null, partial: OBK.partial && OBK.partial.p === p};
 }
 function obRowsFor(cats){ const set = new Set(cats); return CALC.rows.map((r, i) => set.has(r.s.cat) ? i : -1).filter(i => i >= 0); }
+const FO = {g:new Set(), s:new Set(), k:new Set()};
+const obCatOpts = () => OB_GROUPS.filter(([g]) => !FO.g.size || FO.g.has(g)).flatMap(([g, cats]) => cats.map(c => ({v:c, l:c, sub:FO.g.size === 1 || cats.length === 1 ? '' : g})));
+const obCats = () => FO.s.size ? [...FO.s] : obCatOpts().map(o => o.v);
+const obSkuOpts = () => { const cs = new Set(obCats()); return CALC.rows.filter(r => cs.has(r.s.cat) && (OBK.skus[r.s.name] || r.f.some(v => v > 0.05))).map(r => ({v:r.s.name, l:r.s.name, sub:cs.size > 1 ? r.s.cat : ''})); };
+function obScopeIdx(){ const cs = new Set(obCats()); return CALC.rows.map((r, i) => cs.has(r.s.cat) && (!FO.k.size || FO.k.has(r.s.name)) ? i : -1).filter(i => i >= 0); }
 function renderOB(){
   if (!OBK){
     $('view').innerHTML = `<div class="panel empty"><h2>Add actual order booking</h2>
@@ -724,79 +828,87 @@ function renderOB(){
   const months = OBK.months, {n, p0} = CALC;
   const kindLbl = p => { const t = p - p0, pt = OBK.partial && OBK.partial.p === p ? ` · booking to ${OBK.partial.day} ${MON[p % 12]}` : '';
     return (t <= n ? 'Forecast made a month before' : t - n <= 3 ? 'Current forecast' : 'No forecast') + pt; };
-  const pct = c => c.partial ? '<span class="muted">partial</span>' : F(c) != null && B(c) > 0 ? fmt(F(c) / B(c) * 100, 0) + '%' : '—';
+  // Booked ÷ Forecast and Difference = Booked − Forecast; Forecast column comes first
+  const ratio = (b, f) => f > 0 ? fmt(b / f * 100, 0) + '%' : '—';
+  const pct = c => c.partial ? '<span class="muted">partial</span>' : F(c) != null ? ratio(B(c), F(c)) : '—';
   const sum = cells => cells.reduce((z, c) => { if (!c.partial && c.fq != null){ z.bq += c.bq; z.bv += c.bv; z.fq += c.fq; z.fv += c.fv; } return z; }, {bq:0, bv:0, fq:0, fv:0});
-  const cellsHtml = (cells, tot) => cells.map(c => `<td class="bl">${fmt(B(c), d)}</td><td class="fc">${F(c) == null ? '—' : fmt(F(c), d)}</td><td>${F(c) == null || c.partial ? '—' : sgn(F(c) - B(c), d)}</td><td><b>${pct(c)}</b></td>`).join('')
-    + `<td class="bl">${fmt(B(tot), d)}</td><td class="fc">${fmt(F(tot), d)}</td><td>${sgn(F(tot) - B(tot), d)}</td><td><b>${B(tot) > 0 ? fmt(F(tot) / B(tot) * 100, 0) + '%' : '—'}</b></td>`;
+  const cellsHtml = (cells, tot) => cells.map(c => `<td class="fc bl">${F(c) == null ? '—' : fmt(F(c), d)}</td><td>${fmt(B(c), d)}</td><td>${F(c) == null || c.partial ? '—' : sgn(B(c) - F(c), d)}</td><td><b>${pct(c)}</b></td>`).join('')
+    + `<td class="fc bl">${fmt(F(tot), d)}</td><td>${fmt(B(tot), d)}</td><td>${sgn(B(tot) - F(tot), d)}</td><td><b>${ratio(B(tot), F(tot))}</b></td>`;
   const head = (first) => `<thead><tr><th class="t sticky" rowspan="2">${first} · ${val ? '₹ lakh' : 'units'}</th>${months.map(p => `<th class="grp" colspan="4">${pLabel(p)}<br><span style="font-weight:400;color:var(--muted)">${kindLbl(p)}</span></th>`).join('')}
       <th class="grp" colspan="4">Total<br><span style="font-weight:400;color:var(--muted)">complete months</span></th></tr>
-      <tr>${[...months, 0].map(() => `<th class="bl">Booked</th><th class="fc">Forecast</th><th>Difference</th><th>Fcst ÷ booked</th>`).join('')}</tr></thead>`;
-  let body = '', chartRows;
-  const grpRows = OB_GROUPS.map(([g, cats]) => { const idx = obRowsFor(cats); return {g, cells: months.map(p => obCell(idx, p))}; });
-  const allIdx = obRowsFor(OB_GROUPS.flatMap(g => g[1]));
-  const totalRow = {g:'Total', cells: months.map(p => obCell(allIdx, p))};
+      <tr>${[...months, 0].map(() => `<th class="fc bl">Forecast</th><th>Booked</th><th>Difference</th><th>Booked ÷ fcst</th>`).join('')}</tr></thead>`;
+  const cats = obCats(), catSet = new Set(cats), scope = obScopeIdx();
+  const totalRow = {g:'Total', cells: months.map(p => obCell(scope, p))};
+  const filtered = FO.g.size || FO.s.size || FO.k.size;
+  let body = '';
   if (OBVIEW === 'grp'){
-    const multi = OB_GROUPS.filter(g => g[1].length > 1).map(g => g[0]);
-    body = `<div class="controls" style="margin-bottom:8px"><button id="obexp">${multi.every(g => OBOPEN.has(g)) ? 'Collapse all' : 'Expand all'}</button>
-        <span class="muted" style="font-size:13px">Click Pulley or Coupling to show or hide its sub-categories.</span></div>
-      <div class="tablewrap"><table>${head('Product')}<tbody>${grpRows.map((r, gi) => {
-        const cats = OB_GROUPS[gi][1], can = cats.length > 1, open = can && OBOPEN.has(r.g);
-        let h = `<tr ${can ? `data-og="${esc(r.g)}" style="cursor:pointer"` : ''} class="${open ? 'g' : ''}"><td class="t sticky">${can ? (open ? '▾ ' : '▸ ') : ''}${esc(r.g)}</td>${cellsHtml(r.cells, sum(r.cells))}</tr>`;
-        if (open) for (const c of cats){ const cc = months.map(p => obCell(obRowsFor([c]), p)); h += `<tr class="sub1"><td class="t sticky">${esc(c)}</td>${cellsHtml(cc, sum(cc))}</tr>`; }
-        return h; }).join('')}
-      <tr class="tot"><td class="t sticky">Total</td>${cellsHtml(totalRow.cells, sum(totalRow.cells))}</tr></tbody></table></div>`;
+    const kset = FO.k.size ? FO.k : null;
+    const idxFor = cs => obRowsFor(cs).filter(i => !kset || kset.has(CALC.rows[i].s.name));
+    const groups = OB_GROUPS.map(([g, cs]) => [g, cs.filter(c => catSet.has(c))]).filter(([, cs]) => cs.length);
+    const multi = groups.filter(([g]) => OB_GROUPS.find(x => x[0] === g)[1].length > 1).map(g => g[0]);
+    body = `<div class="controls" style="margin-bottom:8px">${multi.length ? `<button id="obexp">${multi.every(g => OBOPEN.has(g)) ? 'Collapse all' : 'Expand all'}</button>
+        <span class="muted" style="font-size:13px">Click a product with ▸ to show or hide its sub-categories.</span>` : ''}</div>
+      <div class="tablewrap"><table>${head('Product')}<tbody>${groups.map(([g, cs]) => {
+        const full = OB_GROUPS.find(x => x[0] === g)[1], can = full.length > 1, open = can && OBOPEN.has(g);
+        const cells = months.map(p => obCell(idxFor(cs), p));
+        let h = `<tr ${can ? `data-og="${esc(g)}" style="cursor:pointer"` : ''} class="${open ? 'g' : ''}"><td class="t sticky">${can ? (open ? '▾ ' : '▸ ') : ''}${esc(g)}${can && cs.length < full.length ? ` <span class="muted">(${cs.length} of ${full.length})</span>` : ''}</td>${cellsHtml(cells, sum(cells))}</tr>`;
+        if (open) for (const c of cs){ const cc = months.map(p => obCell(idxFor([c]), p)); h += `<tr class="sub1"><td class="t sticky">${esc(c)}</td>${cellsHtml(cc, sum(cc))}</tr>`; }
+        return h; }).join('') || `<tr><td class="empty" colspan="${4 * months.length + 5}">No rows match the filters.</td></tr>`}
+      <tr class="tot"><td class="t sticky">${filtered ? 'Total (filtered)' : 'Total'}</td>${cellsHtml(totalRow.cells, sum(totalRow.cells))}</tr></tbody></table></div>`;
   } else {
-    const allCats = SECTIONS.flatMap(s => s.cats);
-    if (!allCats.includes(OBCAT)) OBCAT = allCats[0];
-    let rows = obRowsFor([OBCAT]).map(i => ({i, name:CALC.rows[i].s.name, cells: months.map(p => obCell([i], p))}));
+    let rows = scope.map(i => ({i, name:CALC.rows[i].s.name, cat:CALC.rows[i].s.cat, cells: months.map(p => obCell([i], p))}));
     rows.forEach(r => { r.t = sum(r.cells); r.any = r.cells.some(c => c.bq || c.fq > 0.05); });
-    rows = rows.filter(r => r.any && (!OBQ || r.name.toLowerCase().includes(OBQ))).sort((a, b) => B(b.t) - B(a.t));
-    const catTot = {cells: months.map(p => obCell(obRowsFor([OBCAT]), p))};
-    body = `<div class="panel"><div class="seg" id="obcats">${allCats.map(c => `<button data-c="${c}" class="${c===OBCAT?'on':''}">${c}</button>`).join('')}</div>
-        <div class="controls" style="margin-top:12px"><input type="search" id="obq" placeholder="Search SKU…" value="${esc(OBQ)}"></div></div>
-      <div class="count">${rows.length} ${esc(OBCAT)} SKUs with bookings or a forecast · sorted by total booked</div>
-      <div class="tablewrap"><table>${head('SKU')}<tbody><tr class="g"><td class="t sticky">${esc(OBCAT)} total</td>${cellsHtml(catTot.cells, sum(catTot.cells))}</tr>
-      ${rows.map(r => `<tr><td class="t sticky">${esc(r.name)}</td>${cellsHtml(r.cells, r.t)}</tr>`).join('') || `<tr><td class="empty" colspan="${4 * months.length + 5}">No SKUs match.</td></tr>`}</tbody></table></div>`;
+    rows = rows.filter(r => r.any).sort((a, b) => B(b.t) - B(a.t));
+    const multiCat = cats.length > 1;
+    body = `<div class="count">${rows.length} SKUs with bookings or a forecast in ${esc(scopeLabel(cats))} · sorted by total booked</div>
+      <div class="tablewrap"><table>${head('SKU')}<tbody><tr class="g"><td class="t sticky">${filtered ? 'Total (filtered)' : 'Total'}</td>${cellsHtml(totalRow.cells, sum(totalRow.cells))}</tr>
+      ${rows.map(r => `<tr><td class="t sticky">${esc(r.name)}${multiCat ? ` <span class="muted">${esc(r.cat)}</span>` : ''}</td>${cellsHtml(r.cells, r.t)}</tr>`).join('') || `<tr><td class="empty" colspan="${4 * months.length + 5}">No SKUs match.</td></tr>`}</tbody></table></div>`;
   }
-  // chart (product view)
-  const sel = OBSEL === 'Total' ? totalRow : grpRows.find(r => r.g === OBSEL) || totalRow;
+  // chart: forecast bar first, then booked; label = booked ÷ forecast
+  const sel = totalRow;
   const W = 1040, H = 280, padL = 56, padB = 34, padT = 28, bw = (W - padL - 10) / months.length;
   const mx = Math.max(1, ...sel.cells.map(c => Math.max(B(c), F(c) || 0))) * 1.12, y = v => padT + (H - padT - padB) * (1 - v / mx);
-  const chart = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;min-width:560px;height:auto" role="img" aria-label="Order booking vs forecast, ${esc(sel.g)}">
+  const chart = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;min-width:560px;height:auto" role="img" aria-label="Forecast vs order booking">
     ${[0, .25, .5, .75, 1].map(f => mx / 1.12 * f).map(v => `<line x1="${padL}" x2="${W-6}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${padL-6}" y="${y(v)+4}" text-anchor="end" font-size="11" fill="var(--muted)">${fmt(v,0)}</text>`).join('')}
     ${sel.cells.map((c, j) => { const x = padL + j * bw, w = bw * .3;
-      return `<rect x="${x + bw*.17}" y="${y(B(c))}" width="${w}" height="${y(0)-y(B(c))}" fill="var(--accent)" ${c.partial ? 'opacity=".45"' : ''}/>`
-        + (F(c) != null ? `<rect x="${x + bw*.17 + w + 4}" y="${y(F(c))}" width="${w}" height="${y(0)-y(F(c))}" fill="var(--fc)"/>` : '')
-        + (F(c) != null && B(c) > 0 && !c.partial ? `<text x="${x + bw*.5}" y="${Math.min(y(B(c)), y(F(c))) - 7}" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">${fmt(F(c)/B(c)*100,0)}%</text>` : '')
+      return (F(c) != null ? `<rect x="${x + bw*.17}" y="${y(F(c))}" width="${w}" height="${y(0)-y(F(c))}" fill="var(--fc)"/>` : '')
+        + `<rect x="${x + bw*.17 + w + 4}" y="${y(B(c))}" width="${w}" height="${y(0)-y(B(c))}" fill="var(--accent)" ${c.partial ? 'opacity=".45"' : ''}/>`
+        + (F(c) > 0 && !c.partial ? `<text x="${x + bw*.5}" y="${Math.min(y(B(c)), y(F(c))) - 7}" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">${fmt(B(c)/F(c)*100,0)}%</text>` : '')
         + `<text x="${x + bw*.5}" y="${H - 12}" text-anchor="middle" font-size="12" fill="var(--muted)">${pLabel(c.p)}${c.partial ? ' (to ' + OBK.partial.day + ')' : ''}</text>`; }).join('')}
   </svg>`;
   const T = sum(totalRow.cells), part = totalRow.cells.find(c => c.partial);
+  const gOpts = OB_GROUPS.map(([g]) => ({v:g, l:g}));
   $('view').innerHTML = `
     <div class="controls vt"><div class="seg" id="obview"><button data-v="grp" class="${OBVIEW==='grp'?'on':''}">Product groups</button><button data-v="sku" class="${OBVIEW==='sku'?'on':''}">SKUs</button></div>
       <div class="seg" id="obunit"><button data-u="v" class="${val?'on':''}">₹ lakh</button><button data-u="q" class="${!val?'on':''}">Units</button></div></div>
+    <div class="panel filters">
+      ${msel('og', 'Product group', gOpts, FO.g)}
+      ${msel('os', 'Sub-group', obCatOpts(), FO.s)}
+      ${msel('ok', 'SKU', obSkuOpts(), FO.k, true)}
+      ${filtered ? '<button id="fclr" class="link">Clear filters</button>' : ''}</div>
     <div class="cards">
-      <div class="card"><div class="lbl">Booked, complete months</div><div class="n">${val ? '₹' + fmt(T.bv,0) + ' L' : fmt(T.bq)}</div><div class="u">${months.filter(p => !(OBK.partial && OBK.partial.p === p) && fcAt(p - p0)).map(pLabel).join(', ') || '—'} · dashboard SKUs</div></div>
-      <div class="card" style="--c:var(--fc)"><div class="lbl">Our forecast, same months</div><div class="n">${val ? '₹' + fmt(T.fv,0) + ' L' : fmt(T.fq)}</div><div class="u">${esc(modelInfo(CALC.model).label)}, as forecast a month before</div></div>
-      <div class="card" style="--c:var(--ok)"><div class="lbl">Forecast ÷ booked</div><div class="n">${B(T) > 0 ? fmt(F(T)/B(T)*100,0) + '%' : '—'}</div><div class="u">${F(T) - B(T) >= 0 ? 'Forecast above' : 'Forecast below'} bookings by ${val ? '₹' + fmt(Math.abs(T.fv - T.bv),0) + ' L' : fmt(Math.abs(T.fq - T.bq)) + ' units'}</div></div>
+      <div class="card" style="--c:var(--fc)"><div class="lbl">Our forecast, complete months</div><div class="n">${val ? '₹' + fmt(T.fv,0) + ' L' : fmt(T.fq)}</div><div class="u">${months.filter(p => !(OBK.partial && OBK.partial.p === p) && fcAt(p - p0)).map(pLabel).join(', ') || '—'} · ${esc(modelInfo(CALC.model).label)}, as forecast a month before</div></div>
+      <div class="card"><div class="lbl">Booked, same months</div><div class="n">${val ? '₹' + fmt(T.bv,0) + ' L' : fmt(T.bq)}</div><div class="u">${filtered ? 'Filtered selection' : 'All dashboard SKUs'}</div></div>
+      <div class="card" style="--c:var(--ok)"><div class="lbl">Booked ÷ forecast</div><div class="n">${ratio(B(T), F(T))}</div><div class="u">Bookings ${B(T) - F(T) >= 0 ? 'above' : 'below'} forecast by ${val ? '₹' + fmt(Math.abs(T.bv - T.fv),0) + ' L' : fmt(Math.abs(T.bq - T.fq)) + ' units'}</div></div>
       ${part ? `<div class="card" style="--c:var(--muted)"><div class="lbl">${pLabel(part.p)} so far</div><div class="n">${val ? '₹' + fmt(part.bv,0) + ' L' : fmt(part.bq)}</div><div class="u">booked to ${OBK.partial.day} ${MON[part.p % 12]} vs ${part.fq == null ? '—' : (val ? '₹' + fmt(part.fv,0) + ' L' : fmt(part.fq))} forecast for the month</div></div>` : ''}
     </div>
-    ${OBVIEW === 'grp' ? `<div class="panel">
+    <div class="panel">
       <div class="controls" style="justify-content:space-between">
-        <div class="seg" id="obsel">${['Total', ...OB_GROUPS.map(g => g[0])].map(g => `<button data-g="${g}" class="${g===sel.g?'on':''}">${g}</button>`).join('')}</div>
-        <div style="display:flex;gap:14px;flex-wrap:wrap"><span class="legend"><i style="background:var(--accent)"></i>Order booking</span><span class="legend"><i style="background:var(--fc)"></i>Our forecast</span></div>
-      </div><div style="overflow-x:auto;margin-top:10px">${chart}</div></div>` : ''}
+        <b>${filtered ? esc(scopeLabel(cats)) + (FO.k.size ? ' · ' + FO.k.size + ' SKU' + (FO.k.size > 1 ? 's' : '') : '') : 'All products'}</b>
+        <div style="display:flex;gap:14px;flex-wrap:wrap"><span class="legend"><i style="background:var(--fc)"></i>Our forecast</span><span class="legend"><i style="background:var(--accent)"></i>Order booking</span></div>
+      </div><div style="overflow-x:auto;margin-top:10px">${chart}</div></div>
     ${body}
     <p class="note">Booked = actual order booking (${esc((OBK.files || []).join(', '))}, ${fmt(OBK.lines)} lines) for the dashboard SKUs, matched with the same SKU mapping as sales; ${fmt(OBK.mappedV / OBK.totalV * 100, 0)}% of booking value is in dashboard SKUs (the rest is aerators, spares and unmapped variants).
       Forecast = our sales forecast for that month (${esc(modelInfo(CALC.model).label)}): for past months, the forecast as it would have been made a month before; for the next 3 months, the current forecast.
-      Difference = forecast − booked. ${OBK.partial ? pLabel(OBK.partial.p) + ' only has bookings to ' + OBK.partial.day + ' ' + MON[OBK.partial.p % 12] + ', so it is shown but left out of totals.' : ''}</p>`;
-  document.querySelectorAll('#obsel button').forEach(b => b.onclick = () => { OBSEL = b.dataset.g; renderOB(); });
-  document.querySelectorAll('#obview button').forEach(b => b.onclick = () => { OBVIEW = b.dataset.v; renderOB(); });
+      Difference = booked − forecast. Booked ÷ fcst = booked ÷ forecast. The chart and totals follow the filters. ${OBK.partial ? pLabel(OBK.partial.p) + ' only has bookings to ' + OBK.partial.day + ' ' + MON[OBK.partial.p % 12] + ', so it is shown but left out of totals.' : ''}</p>`;
+  const prune = () => { const ok = new Set(obCatOpts().map(o => o.v)); [...FO.s].forEach(v => ok.has(v) || FO.s.delete(v)); const okk = new Set(obSkuOpts().map(o => o.v)); [...FO.k].forEach(v => okk.has(v) || FO.k.delete(v)); };
+  bindMsel({og:{opts:gOpts, sel:FO.g, after:prune}, os:{opts:obCatOpts(), sel:FO.s, after:prune}, ok:{opts:obSkuOpts(), sel:FO.k}}, renderOB);
+  const c = $('fclr'); if (c) c.onclick = () => { FO.g.clear(); FO.s.clear(); FO.k.clear(); renderOB(); };
+  document.querySelectorAll('#obview button').forEach(b => b.onclick = () => { OBVIEW = b.dataset.v; MSOPEN = null; renderOB(); });
   document.querySelectorAll('tr[data-og]').forEach(tr => tr.onclick = () => { const g = tr.dataset.og; OBOPEN.has(g) ? OBOPEN.delete(g) : OBOPEN.add(g); store.set('fc-obopen', [...OBOPEN]); renderOB(); });
   const ex = $('obexp'); if (ex) ex.onclick = () => { const multi = OB_GROUPS.filter(g => g[1].length > 1).map(g => g[0]); const all = multi.every(g => OBOPEN.has(g));
     OBOPEN = new Set(all ? [] : multi); store.set('fc-obopen', [...OBOPEN]); renderOB(); };
   document.querySelectorAll('#obunit button').forEach(b => b.onclick = () => { OBUNIT = b.dataset.u; store.set('fc-obunit', OBUNIT); renderOB(); });
-  document.querySelectorAll('#obcats button').forEach(b => b.onclick = () => { OBCAT = b.dataset.c; renderOB(); });
-  const q = $('obq'); if (q) q.oninput = e => { OBQ = e.target.value.trim().toLowerCase(); const pos = e.target.selectionStart; renderOB(); const x = $('obq'); x.focus(); x.setSelectionRange(pos, pos); };
 }
 
 /* ---- backtest: 1-month-ahead forecasts for each of the last 6 months ---- */
@@ -868,19 +980,19 @@ function exportExcel(){
   XLSX.utils.book_append_sheet(wb, ws2, 'Sub Dashboard');
   // actual vs forecast (months n-1 and n)
   const pct = (A, F) => { const a = accOf(A, F); return a == null ? '' : +(a * 100).toFixed(1); };
-  const avH = ['Actual','Forecast','Variance','Accuracy %'];
+  const avH = ['Forecast','Actual','Variance (A−F)','Accuracy %'];
   const cat = [['Product group','Sub-group', ...[0,1].flatMap(k => avH.map(h => `${L[k]} ${h} (Vol)`)), ...[0,1].flatMap(k => avH.map(h => `${L[k]} ${h} (Val ₹ lakh)`)), `Model ${L[0]}`, `Model ${L[1]}`]];
   for (const [g, sg, o] of MAIN_ROWS){
     if (o.todo) continue;
     const a = agg[o.cat + (o.combo ? '|combo' : '')];
-    cat.push([g, sg, ...[0,1].flatMap(k => [Math.round(a.aq[k]), +a.pq[k].toFixed(1), +(a.aq[k] - a.pq[k]).toFixed(1), pct(a.aq[k], a.pq[k])]),
-      ...[0,1].flatMap(k => [+a.av[k].toFixed(2), +a.pv[k].toFixed(2), +(a.av[k] - a.pv[k]).toFixed(2), pct(a.av[k], a.pv[k])]),
+    cat.push([g, sg, ...[0,1].flatMap(k => [+a.pq[k].toFixed(1), Math.round(a.aq[k]), +(a.aq[k] - a.pq[k]).toFixed(1), pct(a.aq[k], a.pq[k])]),
+      ...[0,1].flatMap(k => [+a.pv[k].toFixed(2), +a.av[k].toFixed(2), +(a.av[k] - a.pv[k]).toFixed(2), pct(a.av[k], a.pv[k])]),
       MODELS[CALC.pastPick[0][o.cat]].label, MODELS[CALC.pastPick[1][o.cat]].label]);
   }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cat), 'Act vs Fcst - Categories');
   const skus = [['SKU','Category', ...[0,1].flatMap(k => avH.map(h => `${L[k]} ${h} (Vol)`)), `Model ${L[0]}`, `Model ${L[1]}`]];
   for (const r of CALC.rows){ const A = k => r.d.q[CALC.n - 1 + k];
-    skus.push([r.s.name, r.s.cat, ...[0,1].flatMap(k => [A(k), +r.pf[k].toFixed(2), +(A(k) - r.pf[k]).toFixed(2), pct(A(k), r.pf[k])]),
+    skus.push([r.s.name, r.s.cat, ...[0,1].flatMap(k => [+r.pf[k].toFixed(2), A(k), +(A(k) - r.pf[k]).toFixed(2), pct(A(k), r.pf[k])]),
       MODELS[CALC.pastPick[0][r.s.cat]].label, MODELS[CALC.pastPick[1][r.s.cat]].label]); }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(skus), 'Act vs Fcst - SKUs');
   // database: one row per SKU per month
@@ -892,9 +1004,9 @@ function exportExcel(){
   if (CALC.model === 'best') for (const [c, m] of Object.entries(CALC.pick)) info.push(['Model used for ' + c, MODELS[m].label]);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(info), 'About');
   if (OBK){
-    const ob = [['Level','Name','Month','Booked units','Forecast units','Booked ₹ lakh','Forecast ₹ lakh','Forecast ÷ booked % (₹)','Note']];
+    const ob = [['Level','Name','Month','Forecast units','Booked units','Forecast ₹ lakh','Booked ₹ lakh','Difference ₹ lakh (booked − forecast)','Booked ÷ forecast % (₹)','Note']];
     const add = (lvl, name, idx) => { for (const p of OBK.months){ const c = obCell(idx, p);
-      ob.push([lvl, name, pLabel(p), c.bq, c.fq == null ? '' : +c.fq.toFixed(1), +c.bv.toFixed(2), c.fv == null ? '' : +c.fv.toFixed(2), c.fv != null && c.bv > 0 ? +(c.fv / c.bv * 100).toFixed(1) : '', c.partial ? 'Partial month (bookings to ' + OBK.partial.day + ')' : '']); } };
+      ob.push([lvl, name, pLabel(p), c.fq == null ? '' : +c.fq.toFixed(1), c.bq, c.fv == null ? '' : +c.fv.toFixed(2), +c.bv.toFixed(2), c.fv == null ? '' : +(c.bv - c.fv).toFixed(2), c.fv > 0 ? +(c.bv / c.fv * 100).toFixed(1) : '', c.partial ? 'Partial month (bookings to ' + OBK.partial.day + ')' : '']); } };
     for (const [g, cats] of OB_GROUPS) add('Product group', g, obRowsFor(cats));
     for (const c of SECTIONS.flatMap(s => s.cats)) add('Category', c, obRowsFor([c]));
     CALC.rows.forEach((r, i) => { if (OBK.skus[r.s.name]) add('SKU', r.s.name, [i]); });
