@@ -93,6 +93,8 @@ button.link{border:0;background:none;color:var(--accent);padding:4px 6px;text-de
 th.pf,td.pf{background:var(--soft)}
 .apill{display:inline-block;min-width:46px;text-align:center;padding:1px 8px;border-radius:999px;font:600 12px "IBM Plex Sans",system-ui,sans-serif;color:var(--muted);background:var(--soft)}
 .apill.a-good{color:var(--ok);background:var(--ok-bg)} .apill.a-warn{color:var(--warn);background:var(--fc-bg)} .apill.a-bad{color:var(--bad);background:var(--bad-bg)}
+.mv{display:inline-block;padding:1px 8px;border-radius:999px;font:600 11px "IBM Plex Sans",system-ui,sans-serif;white-space:nowrap}
+.mv-runner{color:var(--ok);background:var(--ok-bg)} .mv-repeater{color:var(--accent);background:var(--soft)} .mv-stranger{color:var(--warn);background:var(--fc-bg)} .mv-notinscope{color:var(--muted);background:var(--soft)}
 .mtag{font:600 11px "IBM Plex Sans",system-ui,sans-serif;color:var(--fc);margin-top:1px;white-space:nowrap}
 .bud{width:96px;text-align:right;font-family:"IBM Plex Mono",monospace;padding:4px 6px;font-size:13px}
 .muted{color:var(--muted)}
@@ -382,7 +384,9 @@ function compute(){
     const pf = past.map(P => forecast(P.pk[s.cat], d.q, P.o, 1, p0, P.g[s.cat]));
     const pcf = past.map(P => forecast(P.pk[s.cat], d.cq, P.o, 1, p0, P.gc[s.cat]));
     const pp = past.map(P => priceOf(d, P.o)), pcp = past.map(P => comboPrice(d, P.o));
-    return {s, d, model:m, pf, pcf, pp, pcp, avg12:l12 / 12, sold12:l12 !== 0 || d.q.slice(Math.max(0,n-11)).some(x => x), f, cf, price, cprice,
+    let sold24 = 0; for (let t = Math.max(0, n - 23); t <= n; t++) if (d.q[t] > 0) sold24++;
+    const mv = sold24 >= 21 ? 'Runner' : sold24 >= 12 ? 'Repeater' : sold24 >= 6 ? 'Stranger' : 'Not in scope';
+    return {s, d, model:m, pf, pcf, pp, pcp, mv, sold24, avg12:l12 / 12, sold12:l12 !== 0 || d.q.slice(Math.max(0,n-11)).some(x => x), f, cf, price, cprice,
             minStock: Math.ceil(Math.max(...f) - 1e-9)};
   });
   CALC = {model, n, p0, T, rows, gC, pick, pastPick: past.map(P => P.pk), catQ};
@@ -441,6 +445,12 @@ function bindToggle(fn){
 }
 const pickLabel = (c, k) => MODELS[CALC.pastPick[k][c]].short;
 function monthHeads(){ const {n, p0} = CALC; return [n-1, n, n+1, n+2, n+3].map(t => pLabel(p0 + t)); }
+
+/* ---- movement class (runner / repeater / stranger / not in scope) ---- */
+const MOVES = ['Runner','Repeater','Stranger','Not in scope'];
+const MV_OPTS = MOVES.map(m => ({v:m, l:m, sub:{Runner:'21–24 of 24 mo', Repeater:'12–20', Stranger:'6–11', 'Not in scope':'0–5'}[m]}));
+const mvPill = r => `<span class="mv mv-${r.mv.replace(/\s+/g,'').toLowerCase()}" title="Sold in ${r.sold24} of the last 24 months">${r.mv}</span>`;
+const mvCounts = rows => MOVES.map(m => [m, rows.filter(r => r.mv === m).length]).filter(x => x[1]).map(([m, c]) => `${m} ${c}`).join(' · ');
 
 /* ---- multi-select dropdown filters (empty selection = all) ---- */
 let MSOPEN = null; const MSQ = {};
@@ -639,26 +649,27 @@ function skuAcc(rows){   // SKU-level accuracy = 1 − Σ|A−F| ÷ ΣA, for mon
 }
 
 /* ---- SKU detail ---- */
-const FS = {g:new Set(['Pulley']), s:new Set(['TLP']), k:new Set(), show:'q', sort:'var', sm:1};
+const FS = {g:new Set(['Pulley']), s:new Set(['TLP']), k:new Set(), mv:new Set(), show:'q', sort:'var', sm:1};
 const skuCatOpts = () => SECTIONS.filter(s => !FS.g.size || FS.g.has(s.name)).flatMap(s => s.cats.map(c => ({v:c, l:c, sub:FS.g.size === 1 ? '' : s.name})));
 const skuCats = () => FS.s.size ? [...FS.s] : skuCatOpts().map(o => o.v);
-const skuNameOpts = () => { const cs = new Set(skuCats()); return CALC.rows.filter(r => cs.has(r.s.cat)).map(r => ({v:r.s.name, l:r.s.name, sub:cs.size > 1 ? r.s.cat : ''})); };
-function skuScope(){ const cs = new Set(skuCats()); return CALC.rows.filter(r => cs.has(r.s.cat) && (!FS.k.size || FS.k.has(r.s.name)) && (!ONLY12 || r.sold12)); }
+const skuNameOpts = () => { const cs = new Set(skuCats()); return CALC.rows.filter(r => cs.has(r.s.cat) && (!FS.mv.size || FS.mv.has(r.mv))).map(r => ({v:r.s.name, l:r.s.name, sub:cs.size > 1 ? r.s.cat : ''})); };
+function skuScope(){ const cs = new Set(skuCats()); return CALC.rows.filter(r => cs.has(r.s.cat) && (!FS.mv.size || FS.mv.has(r.mv)) && (!FS.k.size || FS.k.has(r.s.name)) && (!ONLY12 || r.sold12)); }
 function skuFilters(L, acc){
   return `<div class="panel filters">
     ${msel('sg', 'Product group', SECTIONS.map(s => ({v:s.name, l:s.name})), FS.g)}
     ${msel('ss', 'Sub-group', skuCatOpts(), FS.s)}
+    ${msel('smv', 'Movement', MV_OPTS, FS.mv)}
     ${msel('sk', 'SKU', skuNameOpts(), FS.k, true)}
     ${acc ? `<span class="fl">Show</span>${showSeg('show', FS.show)}<span class="fl">Sort</span>${sortSeg(FS, L, false)}` : ''}
     <label class="chk"><input type="checkbox" id="only12" ${ONLY12?'checked':''}> Only SKUs sold in the last 12 months</label>
-    ${FS.g.size || FS.s.size || FS.k.size ? '<button id="fclr" class="link">Clear filters</button>' : ''}</div>`;
+    ${FS.g.size || FS.s.size || FS.k.size || FS.mv.size ? '<button id="fclr" class="link">Clear filters</button>' : ''}</div>`;
 }
 function bindSkuFilters(){
   const prune = () => { const ok = new Set(skuCatOpts().map(o => o.v)); [...FS.s].forEach(v => ok.has(v) || FS.s.delete(v)); const okk = new Set(skuNameOpts().map(o => o.v)); [...FS.k].forEach(v => okk.has(v) || FS.k.delete(v)); };
-  bindMsel({sg:{opts:SECTIONS.map(s => ({v:s.name, l:s.name})), sel:FS.g, after:prune}, ss:{opts:skuCatOpts(), sel:FS.s, after:prune}, sk:{opts:skuNameOpts(), sel:FS.k}}, renderSku);
+  bindMsel({sg:{opts:SECTIONS.map(s => ({v:s.name, l:s.name})), sel:FS.g, after:prune}, ss:{opts:skuCatOpts(), sel:FS.s, after:prune}, smv:{opts:MV_OPTS, sel:FS.mv, after:prune}, sk:{opts:skuNameOpts(), sel:FS.k}}, renderSku);
   bindShowSort(FS, renderSku);
   $('only12').onchange = e => { ONLY12 = e.target.checked; renderSku(); };
-  const c = $('fclr'); if (c) c.onclick = () => { FS.g.clear(); FS.s.clear(); FS.k.clear(); renderSku(); };
+  const c = $('fclr'); if (c) c.onclick = () => { FS.g.clear(); FS.s.clear(); FS.k.clear(); FS.mv.clear(); renderSku(); };
   document.querySelectorAll('tbody tr[data-i]').forEach(tr => tr.onclick = () => { const i = +tr.dataset.i; OPEN = OPEN === i ? null : i; renderSku(); });
 }
 const scopeLabel = cats => cats.length === 1 ? cats[0] : cats.length <= 3 ? cats.join(' + ') : cats.length + ' sub-groups';
@@ -667,18 +678,18 @@ function renderSku(){
   if (VIEW === 'acc') return renderSkuAcc();
   const L = monthHeads(), cats = skuCats(), multi = cats.length > 1;
   let view = skuScope();
-  const keys = {name:r => r.s.name, cat:r => r.s.cat, avg12:r => r.avg12, min:r => r.minStock, f1:r => r.f[0], f2:r => r.f[1], f3:r => r.f[2]};
+  const keys = {name:r => r.s.name, mv:r => r.sold24, cat:r => r.s.cat, avg12:r => r.avg12, min:r => r.minStock, f1:r => r.f[0], f2:r => r.f[1], f3:r => r.f[2]};
   if (!keys[SORT.k]) SORT = {k:'avg12', d:-1};
   const key = keys[SORT.k];
   view.sort((a,b) => { const x = key(a), y = key(b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * SORT.d; });
   const tot = view.reduce((z,r) => (z.a += r.avg12, z.m += r.minStock, r.f.forEach((v,k) => z.f[k] += v), z), {a:0, m:0, f:[0,0,0]});
   const head = (k, l, cls='') => `<th data-k="${k}" class="${cls}">${l}${SORT.k===k ? (SORT.d>0?' ▲':' ▼') : ''}</th>`;
-  const {n, p0} = CALC, nc = multi ? 8 : 7;
+  const {n, p0} = CALC, nc = multi ? 9 : 8;
   const models = [...new Set(cats.map(c => CALC.pick[c]))];
   const rowsHtml = view.map(r => {
     const h = r.d.q.slice(Math.max(0, n - 11), n + 1), max = Math.max(1, ...h, ...r.f);
     const spark = `<svg class="spark" width="120" height="22" viewBox="0 0 120 22">${h.concat(r.f).map((v,j) => { const hh = Math.max(0,v)/max*20; return `<rect x="${j*8}" y="${21-hh}" width="6" height="${hh||0.5}" fill="var(${j>=12?'--fc':'--accent'})" opacity="${j>=12?1:.6}"/>`; }).join('')}</svg>`;
-    let html = `<tr data-i="${r.s.i}" style="cursor:pointer" class="${r.sold12 ? '' : 'dim'}"><td class="t sticky">${esc(r.s.name)}</td>${multi ? `<td class="t">${esc(r.s.cat)}</td>` : ''}
+    let html = `<tr data-i="${r.s.i}" style="cursor:pointer" class="${r.sold12 ? '' : 'dim'}"><td class="t sticky">${esc(r.s.name)}</td><td class="t">${mvPill(r)}</td>${multi ? `<td class="t">${esc(r.s.cat)}</td>` : ''}
       <td>${fmtQ(r.avg12)}</td><td><b>${fmt(r.minStock)}</b></td>${r.f.map(v => `<td class="fc">${fmtQ(v)}</td>`).join('')}<td>${spark}</td></tr>`;
     if (OPEN === r.s.i){
       const from = Math.max(0, n - 23), hist = r.d.q.slice(from, n + 1), all = hist.concat(r.f), mx = Math.max(1, ...all.map(v => Math.max(0,v)));
@@ -691,14 +702,14 @@ function renderSku(){
   $('view').innerHTML = viewToggle() + skuFilters(L, false) + `
     <div class="count">Showing ${view.length} SKUs in ${esc(scopeLabel(cats))} · forecast model: <b>${models.length === 1 ? esc(MODELS[models[0]].label) : 'varies by sub-group'}</b>${CALC.model === 'best' ? ' (Best per category)' : ''} · tap a row for its monthly history</div>
     <div class="tablewrap"><table class="sortable">
-      <thead><tr>${head('name','SKU','t sticky')}${multi ? head('cat','Sub-group','t') : ''}${head('avg12','Last 12-mo avg')}${head('min','Min stock')}
+      <thead><tr>${head('name','SKU','t sticky')}${head('mv','Movement','t')}${multi ? head('cat','Sub-group','t') : ''}${head('avg12','Last 12-mo avg')}${head('min','Min stock')}
         ${head('f1', L[2] + ' (n+1)', 'fc')}${head('f2', L[3] + ' (n+2)', 'fc')}${head('f3', L[4] + ' (n+3)', 'fc')}<th>12 mo + forecast</th></tr></thead>
       <tbody>
-        <tr class="g"><td class="t sticky">Total (${view.length})</td>${multi ? '<td></td>' : ''}<td>${fmt(tot.a,1)}</td><td>${fmt(tot.m)}</td>${tot.f.map(v => `<td class="fc">${fmt(v)}</td>`).join('')}<td></td></tr>
+        <tr class="g"><td class="t sticky">Total (${view.length})</td><td class="t muted" style="font-weight:400;font-size:12px">${mvCounts(view)}</td>${multi ? '<td></td>' : ''}<td>${fmt(tot.a,1)}</td><td>${fmt(tot.m)}</td>${tot.f.map(v => `<td class="fc">${fmt(v)}</td>`).join('')}<td></td></tr>
         ${rowsHtml || `<tr><td colspan="${nc}" class="empty">No SKUs match the filters.</td></tr>`}
       </tbody>
     </table></div>
-    <p class="note">Min stock = the highest of the next 3 months' forecast (rounded up). Last 12-mo avg = net units sold ${pLabel(p0+n-11)} – ${pLabel(p0+n)} ÷ 12. Greyed rows had no sales in the last 12 months. Use the SKU filter to pick one or more SKUs; leave it on "All" to see every SKU in the chosen sub-groups.</p>`;
+    <p class="note">Min stock = the highest of the next 3 months' forecast (rounded up). Last 12-mo avg = net units sold ${pLabel(p0+n-11)} – ${pLabel(p0+n)} ÷ 12. Greyed rows had no sales in the last 12 months. Movement = months with net sales above zero in the last 24 months (${pLabel(p0+Math.max(0,n-23))} – ${pLabel(p0+n)}): Runner 21–24, Repeater 12–20, Stranger 6–11, Not in scope 0–5. Use the SKU filter to pick one or more SKUs; leave it on "All" to see every SKU in the chosen sub-groups.</p>`;
   document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => { const k = th.dataset.k; if (SORT.k === k) SORT.d *= -1; else SORT = {k, d: (k === 'name' || k === 'cat') ? 1 : -1}; renderSku(); });
   bindToggle(renderSku); bindSkuFilters();
 }
@@ -715,10 +726,10 @@ function renderSkuAcc(){
   const tot = blocks.map(b => [0,1].map(k => view.reduce((z, r) => (z.a += b.A(r,k), z.f += b.F(r,k), z), {a:0, f:0})));
   const cells = (getA, getF) => [0,1].map(k => blocks.map(b => accCells(getA(b, k), getF(b, k), b.d)).join('')).join('');
   const sk = skuAcc(view);
-  const nc = 1 + (multi ? 1 : 0) + 8 * blocks.length;
+  const nc = 2 + (multi ? 1 : 0) + 8 * blocks.length;
   const ms = [...new Set(cats.map(c => pickLabel(c, 0) + ' / ' + pickLabel(c, 1)))];
   const rowsHtml = view.map(r => {
-    let html = `<tr data-i="${r.s.i}" style="cursor:pointer" class="${r.sold12 ? '' : 'dim'}"><td class="t sticky">${esc(r.s.name)}</td>${multi ? `<td class="t">${esc(r.s.cat)}</td>` : ''}
+    let html = `<tr data-i="${r.s.i}" style="cursor:pointer" class="${r.sold12 ? '' : 'dim'}"><td class="t sticky">${esc(r.s.name)}</td><td class="t">${mvPill(r)}</td>${multi ? `<td class="t">${esc(r.s.cat)}</td>` : ''}
       ${cells((b, k) => b.A(r, k), (b, k) => b.F(r, k))}</tr>`;
     if (OPEN === r.s.i){
       const from = Math.max(0, n - 11), hist = r.d.q.slice(from, n + 1), mx = Math.max(1, ...hist.map(v => Math.max(0,v)), ...r.pf);
@@ -735,11 +746,11 @@ function renderSkuAcc(){
       · ${FS.sort === 'var' ? `sorted by biggest ${L[FS.sm]} variance (${sb === 'v' ? 'value' : 'units'})` : 'sorted by SKU name'}</div>
     <div class="tablewrap"><table>
       <thead>
-        <tr><th class="t sticky" rowspan="2">SKU</th>${multi ? '<th class="t" rowspan="2">Sub-group</th>' : ''}${[0,1].map(k => blocks.map(b => `<th class="grp" colspan="4">${L[k]} (n${k===0?'-1':''}) · ${b.u}</th>`).join('')).join('')}</tr>
+        <tr><th class="t sticky" rowspan="2">SKU</th><th class="t" rowspan="2">Movement</th>${multi ? '<th class="t" rowspan="2">Sub-group</th>' : ''}${[0,1].map(k => blocks.map(b => `<th class="grp" colspan="4">${L[k]} (n${k===0?'-1':''}) · ${b.u}</th>`).join('')).join('')}</tr>
         <tr>${[0,1].map(() => blocks.map(() => `<th class="pf bl">Forecast</th><th>Actual</th><th>Variance</th><th>Accuracy</th>`).join('')).join('')}</tr>
       </thead>
       <tbody>
-        <tr class="g"><td class="t sticky">Total (${view.length})</td>${multi ? '<td></td>' : ''}${cells((b, k) => tot[blocks.indexOf(b)][k].a, (b, k) => tot[blocks.indexOf(b)][k].f)}</tr>
+        <tr class="g"><td class="t sticky">Total (${view.length})</td><td class="t muted" style="font-weight:400;font-size:12px">${mvCounts(view)}</td>${multi ? '<td></td>' : ''}${cells((b, k) => tot[blocks.indexOf(b)][k].a, (b, k) => tot[blocks.indexOf(b)][k].f)}</tr>
         ${rowsHtml || `<tr><td colspan="${nc}" class="empty">No SKUs match the filters.</td></tr>`}
       </tbody>
     </table></div>
@@ -812,11 +823,11 @@ function obCell(rowsIdx, p){        // booking vs forecast for a set of CALC.row
   return {p, bq, bv, fq: F ? fq : null, fv: F ? fv : null, partial: OBK.partial && OBK.partial.p === p};
 }
 function obRowsFor(cats){ const set = new Set(cats); return CALC.rows.map((r, i) => set.has(r.s.cat) ? i : -1).filter(i => i >= 0); }
-const FO = {g:new Set(), s:new Set(), k:new Set()};
+const FO = {g:new Set(), s:new Set(), k:new Set(), mv:new Set()};
 const obCatOpts = () => OB_GROUPS.filter(([g]) => !FO.g.size || FO.g.has(g)).flatMap(([g, cats]) => cats.map(c => ({v:c, l:c, sub:FO.g.size === 1 || cats.length === 1 ? '' : g})));
 const obCats = () => FO.s.size ? [...FO.s] : obCatOpts().map(o => o.v);
-const obSkuOpts = () => { const cs = new Set(obCats()); return CALC.rows.filter(r => cs.has(r.s.cat) && (OBK.skus[r.s.name] || r.f.some(v => v > 0.05))).map(r => ({v:r.s.name, l:r.s.name, sub:cs.size > 1 ? r.s.cat : ''})); };
-function obScopeIdx(){ const cs = new Set(obCats()); return CALC.rows.map((r, i) => cs.has(r.s.cat) && (!FO.k.size || FO.k.has(r.s.name)) ? i : -1).filter(i => i >= 0); }
+const obSkuOpts = () => { const cs = new Set(obCats()); return CALC.rows.filter(r => cs.has(r.s.cat) && (!FO.mv.size || FO.mv.has(r.mv)) && (OBK.skus[r.s.name] || r.f.some(v => v > 0.05))).map(r => ({v:r.s.name, l:r.s.name, sub:cs.size > 1 ? r.s.cat : ''})); };
+function obScopeIdx(){ const cs = new Set(obCats()); return CALC.rows.map((r, i) => cs.has(r.s.cat) && (!FO.mv.size || FO.mv.has(r.mv)) && (!FO.k.size || FO.k.has(r.s.name)) ? i : -1).filter(i => i >= 0); }
 function renderOB(){
   if (!OBK){
     $('view').innerHTML = `<div class="panel empty"><h2>Add actual order booking</h2>
@@ -834,16 +845,16 @@ function renderOB(){
   const sum = cells => cells.reduce((z, c) => { if (!c.partial && c.fq != null){ z.bq += c.bq; z.bv += c.bv; z.fq += c.fq; z.fv += c.fv; } return z; }, {bq:0, bv:0, fq:0, fv:0});
   const cellsHtml = (cells, tot) => cells.map(c => `<td class="fc bl">${F(c) == null ? '—' : fmt(F(c), d)}</td><td>${fmt(B(c), d)}</td><td>${F(c) == null || c.partial ? '—' : sgn(B(c) - F(c), d)}</td><td><b>${pct(c)}</b></td>`).join('')
     + `<td class="fc bl">${fmt(F(tot), d)}</td><td>${fmt(B(tot), d)}</td><td>${sgn(B(tot) - F(tot), d)}</td><td><b>${ratio(B(tot), F(tot))}</b></td>`;
-  const head = (first) => `<thead><tr><th class="t sticky" rowspan="2">${first} · ${val ? '₹ lakh' : 'units'}</th>${months.map(p => `<th class="grp" colspan="4">${pLabel(p)}<br><span style="font-weight:400;color:var(--muted)">${kindLbl(p)}</span></th>`).join('')}
+  const head = (first, mvCol) => `<thead><tr><th class="t sticky" rowspan="2">${first} · ${val ? '₹ lakh' : 'units'}</th>${mvCol ? '<th class="t" rowspan="2">Movement</th>' : ''}${months.map(p => `<th class="grp" colspan="4">${pLabel(p)}<br><span style="font-weight:400;color:var(--muted)">${kindLbl(p)}</span></th>`).join('')}
       <th class="grp" colspan="4">Total<br><span style="font-weight:400;color:var(--muted)">complete months</span></th></tr>
       <tr>${[...months, 0].map(() => `<th class="fc bl">Forecast</th><th>Booked</th><th>Difference</th><th>Booked ÷ fcst</th>`).join('')}</tr></thead>`;
   const cats = obCats(), catSet = new Set(cats), scope = obScopeIdx();
   const totalRow = {g:'Total', cells: months.map(p => obCell(scope, p))};
-  const filtered = FO.g.size || FO.s.size || FO.k.size;
+  const filtered = FO.g.size || FO.s.size || FO.k.size || FO.mv.size;
   let body = '';
   if (OBVIEW === 'grp'){
     const kset = FO.k.size ? FO.k : null;
-    const idxFor = cs => obRowsFor(cs).filter(i => !kset || kset.has(CALC.rows[i].s.name));
+    const idxFor = cs => obRowsFor(cs).filter(i => (!kset || kset.has(CALC.rows[i].s.name)) && (!FO.mv.size || FO.mv.has(CALC.rows[i].mv)));
     const groups = OB_GROUPS.map(([g, cs]) => [g, cs.filter(c => catSet.has(c))]).filter(([, cs]) => cs.length);
     const multi = groups.filter(([g]) => OB_GROUPS.find(x => x[0] === g)[1].length > 1).map(g => g[0]);
     body = `<div class="controls" style="margin-bottom:8px">${multi.length ? `<button id="obexp">${multi.every(g => OBOPEN.has(g)) ? 'Collapse all' : 'Expand all'}</button>
@@ -856,13 +867,13 @@ function renderOB(){
         return h; }).join('') || `<tr><td class="empty" colspan="${4 * months.length + 5}">No rows match the filters.</td></tr>`}
       <tr class="tot"><td class="t sticky">${filtered ? 'Total (filtered)' : 'Total'}</td>${cellsHtml(totalRow.cells, sum(totalRow.cells))}</tr></tbody></table></div>`;
   } else {
-    let rows = scope.map(i => ({i, name:CALC.rows[i].s.name, cat:CALC.rows[i].s.cat, cells: months.map(p => obCell([i], p))}));
+    let rows = scope.map(i => ({i, r:CALC.rows[i], name:CALC.rows[i].s.name, cat:CALC.rows[i].s.cat, cells: months.map(p => obCell([i], p))}));
     rows.forEach(r => { r.t = sum(r.cells); r.any = r.cells.some(c => c.bq || c.fq > 0.05); });
     rows = rows.filter(r => r.any).sort((a, b) => B(b.t) - B(a.t));
     const multiCat = cats.length > 1;
     body = `<div class="count">${rows.length} SKUs with bookings or a forecast in ${esc(scopeLabel(cats))} · sorted by total booked</div>
-      <div class="tablewrap"><table>${head('SKU')}<tbody><tr class="g"><td class="t sticky">${filtered ? 'Total (filtered)' : 'Total'}</td>${cellsHtml(totalRow.cells, sum(totalRow.cells))}</tr>
-      ${rows.map(r => `<tr><td class="t sticky">${esc(r.name)}${multiCat ? ` <span class="muted">${esc(r.cat)}</span>` : ''}</td>${cellsHtml(r.cells, r.t)}</tr>`).join('') || `<tr><td class="empty" colspan="${4 * months.length + 5}">No SKUs match.</td></tr>`}</tbody></table></div>`;
+      <div class="tablewrap"><table>${head('SKU', true)}<tbody><tr class="g"><td class="t sticky">${filtered ? 'Total (filtered)' : 'Total'}</td><td class="t muted" style="font-weight:400;font-size:12px">${mvCounts(rows.map(x => x.r))}</td>${cellsHtml(totalRow.cells, sum(totalRow.cells))}</tr>
+      ${rows.map(r => `<tr><td class="t sticky">${esc(r.name)}${multiCat ? ` <span class="muted">${esc(r.cat)}</span>` : ''}</td><td class="t">${mvPill(r.r)}</td>${cellsHtml(r.cells, r.t)}</tr>`).join('') || `<tr><td class="empty" colspan="${4 * months.length + 6}">No SKUs match.</td></tr>`}</tbody></table></div>`;
   }
   // chart: forecast bar first, then booked; label = booked ÷ forecast
   const sel = totalRow;
@@ -884,6 +895,7 @@ function renderOB(){
     <div class="panel filters">
       ${msel('og', 'Product group', gOpts, FO.g)}
       ${msel('os', 'Sub-group', obCatOpts(), FO.s)}
+      ${msel('omv', 'Movement', MV_OPTS, FO.mv)}
       ${msel('ok', 'SKU', obSkuOpts(), FO.k, true)}
       ${filtered ? '<button id="fclr" class="link">Clear filters</button>' : ''}</div>
     <div class="cards">
@@ -902,8 +914,8 @@ function renderOB(){
       Forecast = our sales forecast for that month (${esc(modelInfo(CALC.model).label)}): for past months, the forecast as it would have been made a month before; for the next 3 months, the current forecast.
       Difference = booked − forecast. Booked ÷ fcst = booked ÷ forecast. The chart and totals follow the filters. ${OBK.partial ? pLabel(OBK.partial.p) + ' only has bookings to ' + OBK.partial.day + ' ' + MON[OBK.partial.p % 12] + ', so it is shown but left out of totals.' : ''}</p>`;
   const prune = () => { const ok = new Set(obCatOpts().map(o => o.v)); [...FO.s].forEach(v => ok.has(v) || FO.s.delete(v)); const okk = new Set(obSkuOpts().map(o => o.v)); [...FO.k].forEach(v => okk.has(v) || FO.k.delete(v)); };
-  bindMsel({og:{opts:gOpts, sel:FO.g, after:prune}, os:{opts:obCatOpts(), sel:FO.s, after:prune}, ok:{opts:obSkuOpts(), sel:FO.k}}, renderOB);
-  const c = $('fclr'); if (c) c.onclick = () => { FO.g.clear(); FO.s.clear(); FO.k.clear(); renderOB(); };
+  bindMsel({og:{opts:gOpts, sel:FO.g, after:prune}, os:{opts:obCatOpts(), sel:FO.s, after:prune}, omv:{opts:MV_OPTS, sel:FO.mv, after:prune}, ok:{opts:obSkuOpts(), sel:FO.k}}, renderOB);
+  const c = $('fclr'); if (c) c.onclick = () => { FO.g.clear(); FO.s.clear(); FO.k.clear(); FO.mv.clear(); renderOB(); };
   document.querySelectorAll('#obview button').forEach(b => b.onclick = () => { OBVIEW = b.dataset.v; MSOPEN = null; renderOB(); });
   document.querySelectorAll('tr[data-og]').forEach(tr => tr.onclick = () => { const g = tr.dataset.og; OBOPEN.has(g) ? OBOPEN.delete(g) : OBOPEN.add(g); store.set('fc-obopen', [...OBOPEN]); renderOB(); });
   const ex = $('obexp'); if (ex) ex.onclick = () => { const multi = OB_GROUPS.filter(g => g[1].length > 1).map(g => g[0]); const all = multi.every(g => OBOPEN.has(g));
@@ -974,8 +986,8 @@ function exportExcel(){
   }
   const ws1 = XLSX.utils.aoa_to_sheet(main); ws1['!cols'] = [{wch:14},{wch:14},{wch:14}, ...Array(10).fill({wch:16})];
   XLSX.utils.book_append_sheet(wb, ws1, 'Main Dashboard');
-  const sub = [['SKU','Category','Product','Last 12 month Avg','Min Stock to be maintained', `${L[2]} projection (Vol)`, `${L[3]} projection (Vol)`, `${L[4]} projection (Vol)`, 'Price used (₹/unit)', 'Model used']];
-  for (const r of CALC.rows) sub.push([r.s.name, r.s.cat, r.s.prod, +r.avg12.toFixed(2), r.minStock, ...r.f.map(v => +v.toFixed(2)), +r.price.toFixed(2), MODELS[r.model].label]);
+  const sub = [['SKU','Movement','Months sold (last 24)','Category','Product','Last 12 month Avg','Min Stock to be maintained', `${L[2]} projection (Vol)`, `${L[3]} projection (Vol)`, `${L[4]} projection (Vol)`, 'Price used (₹/unit)', 'Model used']];
+  for (const r of CALC.rows) sub.push([r.s.name, r.mv, r.sold24, r.s.cat, r.s.prod, +r.avg12.toFixed(2), r.minStock, ...r.f.map(v => +v.toFixed(2)), +r.price.toFixed(2), MODELS[r.model].label]);
   const ws2 = XLSX.utils.aoa_to_sheet(sub); ws2['!cols'] = [{wch:28},{wch:10},{wch:12}, ...Array(6).fill({wch:18})];
   XLSX.utils.book_append_sheet(wb, ws2, 'Sub Dashboard');
   // actual vs forecast (months n-1 and n)
@@ -990,9 +1002,9 @@ function exportExcel(){
       MODELS[CALC.pastPick[0][o.cat]].label, MODELS[CALC.pastPick[1][o.cat]].label]);
   }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cat), 'Act vs Fcst - Categories');
-  const skus = [['SKU','Category', ...[0,1].flatMap(k => avH.map(h => `${L[k]} ${h} (Vol)`)), `Model ${L[0]}`, `Model ${L[1]}`]];
+  const skus = [['SKU','Movement','Category', ...[0,1].flatMap(k => avH.map(h => `${L[k]} ${h} (Vol)`)), `Model ${L[0]}`, `Model ${L[1]}`]];
   for (const r of CALC.rows){ const A = k => r.d.q[CALC.n - 1 + k];
-    skus.push([r.s.name, r.s.cat, ...[0,1].flatMap(k => [+r.pf[k].toFixed(2), A(k), +(A(k) - r.pf[k]).toFixed(2), pct(A(k), r.pf[k])]),
+    skus.push([r.s.name, r.mv, r.s.cat, ...[0,1].flatMap(k => [+r.pf[k].toFixed(2), A(k), +(A(k) - r.pf[k]).toFixed(2), pct(A(k), r.pf[k])]),
       MODELS[CALC.pastPick[0][r.s.cat]].label, MODELS[CALC.pastPick[1][r.s.cat]].label]); }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(skus), 'Act vs Fcst - SKUs');
   // database: one row per SKU per month
@@ -1004,12 +1016,12 @@ function exportExcel(){
   if (CALC.model === 'best') for (const [c, m] of Object.entries(CALC.pick)) info.push(['Model used for ' + c, MODELS[m].label]);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(info), 'About');
   if (OBK){
-    const ob = [['Level','Name','Month','Forecast units','Booked units','Forecast ₹ lakh','Booked ₹ lakh','Difference ₹ lakh (booked − forecast)','Booked ÷ forecast % (₹)','Note']];
-    const add = (lvl, name, idx) => { for (const p of OBK.months){ const c = obCell(idx, p);
-      ob.push([lvl, name, pLabel(p), c.fq == null ? '' : +c.fq.toFixed(1), c.bq, c.fv == null ? '' : +c.fv.toFixed(2), +c.bv.toFixed(2), c.fv == null ? '' : +(c.bv - c.fv).toFixed(2), c.fv > 0 ? +(c.bv / c.fv * 100).toFixed(1) : '', c.partial ? 'Partial month (bookings to ' + OBK.partial.day + ')' : '']); } };
+    const ob = [['Level','Name','Movement','Month','Forecast units','Booked units','Forecast ₹ lakh','Booked ₹ lakh','Difference ₹ lakh (booked − forecast)','Booked ÷ forecast % (₹)','Note']];
+    const add = (lvl, name, idx, mv = '') => { for (const p of OBK.months){ const c = obCell(idx, p);
+      ob.push([lvl, name, mv, pLabel(p), c.fq == null ? '' : +c.fq.toFixed(1), c.bq, c.fv == null ? '' : +c.fv.toFixed(2), +c.bv.toFixed(2), c.fv == null ? '' : +(c.bv - c.fv).toFixed(2), c.fv > 0 ? +(c.bv / c.fv * 100).toFixed(1) : '', c.partial ? 'Partial month (bookings to ' + OBK.partial.day + ')' : '']); } };
     for (const [g, cats] of OB_GROUPS) add('Product group', g, obRowsFor(cats));
     for (const c of SECTIONS.flatMap(s => s.cats)) add('Category', c, obRowsFor([c]));
-    CALC.rows.forEach((r, i) => { if (OBK.skus[r.s.name]) add('SKU', r.s.name, [i]); });
+    CALC.rows.forEach((r, i) => { if (OBK.skus[r.s.name]) add('SKU', r.s.name, [i], r.mv); });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ob), 'Booking vs forecast');
   }
   XLSX.writeFile(wb, `sales-forecast-${pLabel(DB.p0 + DB.T - 1).replace(' ','-')}-${CALC.model}.xlsx`);
